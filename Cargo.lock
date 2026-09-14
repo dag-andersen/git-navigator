@@ -543,6 +543,7 @@ dependencies = [
  "clap",
  "ratatui",
  "tempfile",
+ "unicode-width",
 ]
 
 [[package]]

@@ -52,13 +52,15 @@ Use a three-pane, file-explorer-style layout. The changed-files pane renders the
 |                 |     └── git.rs      |                 |             |
 ```
 
-Directories in the tree are visual grouping rows and cannot be selected. `Up` and `Down` jump directly between changed files. The diff pane is scrollable and displays each file as a side-by-side diff, with the old version on the left and the new version on the right. Press `v` to switch between a concise view containing Git diff hunks with surrounding context and a full-file view containing every line of the changed file. Both views include old and new line numbers.
+Directories in the tree are visual grouping rows and cannot be selected. `Up` and `Down` jump directly between changed files. The diff pane occupies 60 percent of the terminal and displays each file as a scrollable side-by-side diff, with the old version on the left and the new version on the right. Press `v` to switch between a concise view containing Git diff hunks with surrounding context and a full-file view containing every line of the changed file. Press `w` to toggle wrapping of long lines. Both views include old and new line numbers.
 
 ## Worktrees
 
 Discover and list all Git worktrees associated with the current repository. Each entry should show enough context to identify it, including its directory, current branch, and dirty state. Selecting a worktree updates the file and diff panes.
 
 The app is intended to make worktrees created by developers or AI agents quick to inspect without changing directories.
+
+Missing or disconnected worktrees are marked `MISSING` instead of producing a Git diff error. With the Worktrees pane focused, press `d` to clean up the selected worktree after confirming the action. For a worktree whose `.git` link is missing, cleanup identifies the exact administrative entry whose recorded path matches the selected worktree, then removes only that stale Git metadata. Any remaining directory and files are left untouched. For an existing clean linked worktree, cleanup removes its directory and Git metadata but leaves its branch intact. The current worktree, main worktree, locked worktrees, and dirty worktrees are protected from removal.
 
 ## Change modes
 
@@ -94,9 +96,11 @@ The base branch defaults to `main` and can be changed with `--base <branch>`. A 
 - `Page Up`, `Page Down`, `Home`, and `End` move through large diffs
 - `Tab` switches between Uncommitted and Branch modes
 - `v` switches the diff pane between Hunks and Full File views
+- `w` toggles wrapping of long lines in the diff pane
 - `Enter` expands or collapses the selected diff hunk
 - `r` refreshes worktrees and Git state
+- `d` cleans up the selected non-current worktree after confirmation
 - `?` opens keyboard help
 - `q` quits
 
-The initial version is read-only and does not stage, discard, commit, or otherwise modify repository state.
+Git inspection is read-only. Worktree cleanup is the only modifying action and always requires confirmation.

@@ -23,6 +23,25 @@ pub enum Focus {
     Diff,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteConfirmation {
+    pub path: PathBuf,
+    pub branch: String,
+    pub prune_only: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusKind {
+    Info,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatusMessage {
+    pub kind: StatusKind,
+    pub text: String,
+}
+
 impl Focus {
     fn left(self) -> Self {
         match self {
@@ -46,6 +65,7 @@ pub struct App {
     pub base: String,
     pub mode: ChangeMode,
     pub diff_view: DiffView,
+    pub line_wrap: bool,
     pub focus: Focus,
     pub worktrees: Vec<Worktree>,
     pub files: Vec<ChangedFile>,
@@ -54,7 +74,8 @@ pub struct App {
     pub file_state: ListState,
     pub diff_state: TableState,
     pub show_help: bool,
-    pub status: Option<String>,
+    pub delete_confirmation: Option<DeleteConfirmation>,
+    pub status: Option<StatusMessage>,
 }
 
 impl App {
@@ -90,6 +111,7 @@ impl App {
             base,
             mode: ChangeMode::Uncommitted,
             diff_view: DiffView::Hunks,
+            line_wrap: false,
             focus: Focus::Worktrees,
             worktrees,
             files,
@@ -98,11 +120,24 @@ impl App {
             file_state,
             diff_state,
             show_help: false,
+            delete_confirmation: None,
             status: None,
         })
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.delete_confirmation.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.confirm_worktree_removal(),
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.delete_confirmation = None;
+                    self.set_info("Worktree cleanup cancelled");
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         if self.show_help {
             match key.code {
                 KeyCode::Char('q') => return true,
@@ -116,8 +151,10 @@ impl App {
             KeyCode::Char('q') => return true,
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('d') if self.focus == Focus::Worktrees => self.request_worktree_removal(),
             KeyCode::Tab => self.toggle_mode(),
             KeyCode::Char('v') => self.toggle_diff_view(),
+            KeyCode::Char('w') => self.line_wrap = !self.line_wrap,
             KeyCode::Left | KeyCode::Char('h') => self.focus = self.focus.left(),
             KeyCode::Right | KeyCode::Char('l') => self.focus = self.focus.right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
@@ -269,7 +306,74 @@ impl App {
                 self.worktree_state.select(selected);
                 self.reload_files(selected_file.as_deref());
             }
-            Err(error) => self.status = Some(format!("Refresh failed: {error:#}")),
+            Err(error) => self.set_error(format!("Refresh failed: {error:#}")),
+        }
+    }
+
+    fn request_worktree_removal(&mut self) {
+        let Some(worktree) = self.selected_worktree() else {
+            return;
+        };
+        if worktree.is_current {
+            self.set_error("Cannot remove the currently opened worktree");
+            return;
+        }
+        if worktree.is_main {
+            self.set_error("Cannot remove the main worktree");
+            return;
+        }
+        if let Some(reason) = &worktree.locked_reason {
+            let detail = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {reason}")
+            };
+            self.set_error(format!("Cannot remove a locked worktree{detail}"));
+            return;
+        }
+        if worktree.dirty {
+            self.set_error(
+                "Cannot remove a dirty worktree. Commit, stash, or discard its changes first"
+                    .to_string(),
+            );
+            return;
+        }
+
+        self.delete_confirmation = Some(DeleteConfirmation {
+            path: worktree.path.clone(),
+            branch: worktree.branch.clone(),
+            prune_only: worktree.is_missing(),
+        });
+        self.status = None;
+    }
+
+    fn confirm_worktree_removal(&mut self) {
+        let Some(confirmation) = self.delete_confirmation.take() else {
+            return;
+        };
+        let Some(worktree) = self
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.path == confirmation.path)
+            .cloned()
+        else {
+            self.set_error("The selected worktree no longer exists");
+            return;
+        };
+
+        match git::remove_worktree(&self.directory, &worktree) {
+            Ok(()) => {
+                let operation = if confirmation.prune_only {
+                    "Pruned stale worktree metadata"
+                } else {
+                    "Removed worktree"
+                };
+                self.refresh();
+                if self.status.is_none() {
+                    self.set_info(format!("{operation}: {}", confirmation.path.display()));
+                }
+            }
+            Err(error) => self.set_error(format!("Worktree cleanup failed: {error:#}")),
         }
     }
 
@@ -282,6 +386,22 @@ impl App {
             return;
         };
         let path = worktree.path.clone();
+        if worktree.is_missing() {
+            let reason = worktree
+                .prunable_reason
+                .as_deref()
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or("working directory does not exist")
+                .to_string();
+            self.files.clear();
+            self.file_tree.clear();
+            self.file_state.select(None);
+            self.diff_state.select(None);
+            self.set_error(format!(
+                "Unavailable worktree: {reason}. Press d in the Worktrees pane to clean it up"
+            ));
+            return;
+        }
 
         match git::load_changes(&path, self.mode, self.diff_view, &self.base) {
             Ok(files) => {
@@ -309,9 +429,23 @@ impl App {
                 self.file_tree.clear();
                 self.file_state.select(None);
                 self.diff_state.select(None);
-                self.status = Some(format!("Could not load changes: {error:#}"));
+                self.set_error(format!("Could not load changes: {error:#}"));
             }
         }
+    }
+
+    fn set_info(&mut self, message: impl Into<String>) {
+        self.status = Some(StatusMessage {
+            kind: StatusKind::Info,
+            text: message.into(),
+        });
+    }
+
+    fn set_error(&mut self, message: impl Into<String>) {
+        self.status = Some(StatusMessage {
+            kind: StatusKind::Error,
+            text: message.into(),
+        });
     }
 }
 
@@ -537,5 +671,21 @@ mod tests {
         assert_eq!(moved_file_selection(Some(3), &tree, -1), Some(1));
         assert_eq!(moved_file_selection(Some(1), &tree, -1), Some(1));
         assert_eq!(moved_file_selection(Some(3), &tree, 1), Some(3));
+    }
+
+    #[test]
+    fn missing_worktrees_are_identified_as_unavailable() {
+        let worktree = Worktree {
+            path: PathBuf::from("/missing"),
+            branch: "feature".into(),
+            head: "12345678".into(),
+            dirty: false,
+            is_current: false,
+            is_main: false,
+            available: false,
+            prunable_reason: Some("gitdir file points to non-existent location".into()),
+            locked_reason: None,
+        };
+        assert!(worktree.is_missing());
     }
 }

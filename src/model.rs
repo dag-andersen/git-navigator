@@ -46,6 +46,16 @@ pub struct Worktree {
     pub head: String,
     pub dirty: bool,
     pub is_current: bool,
+    pub is_main: bool,
+    pub available: bool,
+    pub prunable_reason: Option<String>,
+    pub locked_reason: Option<String>,
+}
+
+impl Worktree {
+    pub fn is_missing(&self) -> bool {
+        !self.available || self.prunable_reason.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

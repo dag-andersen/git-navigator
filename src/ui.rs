@@ -9,9 +9,10 @@ use ratatui::{
         Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap,
     },
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    app::{App, Focus},
+    app::{App, Focus, StatusKind},
     model::{ChangeMode, ChangedFile, DiffRow, DiffRowKind, FileStatus, HunkKind},
 };
 
@@ -30,9 +31,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     let [worktrees, files, diff] = Layout::horizontal([
+        Constraint::Percentage(18),
         Constraint::Percentage(22),
-        Constraint::Percentage(28),
-        Constraint::Percentage(50),
+        Constraint::Percentage(60),
     ])
     .areas(body);
 
@@ -44,6 +45,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.show_help {
         render_help(frame);
+    }
+    if let Some(confirmation) = &app.delete_confirmation {
+        render_delete_confirmation(frame, confirmation);
     }
 }
 
@@ -86,6 +90,20 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|worktree| {
             let marker = if worktree.is_current { "●" } else { " " };
             let dirty = if worktree.dirty { "*" } else { "" };
+            let state = if worktree.is_missing() {
+                "MISSING "
+            } else if worktree.locked_reason.is_some() {
+                "LOCKED "
+            } else {
+                ""
+            };
+            let state_style = if worktree.is_missing() {
+                Style::new().fg(Color::LightRed).bold()
+            } else if worktree.locked_reason.is_some() {
+                Style::new().fg(Color::Yellow).bold()
+            } else {
+                Style::default()
+            };
             ListItem::new(vec![
                 Line::from(vec![
                     Span::styled(format!("{marker} "), Style::new().fg(Color::Cyan)),
@@ -94,10 +112,14 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::new().bold(),
                     ),
                 ]),
-                Line::styled(
-                    format!("  {} @ {}", worktree.branch, worktree.head),
-                    Style::new().fg(Color::DarkGray),
-                ),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(state, state_style),
+                    Span::styled(
+                        format!("{} @ {}", worktree.branch, worktree.head),
+                        Style::new().fg(Color::DarkGray),
+                    ),
+                ]),
             ])
         })
         .collect();
@@ -149,8 +171,21 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = app
         .selected_file()
-        .map(|file| format!("Diff [{}] - {}", app.diff_view.label(), file.path.display()))
-        .unwrap_or_else(|| format!("Diff [{}]", app.diff_view.label()));
+        .map(|file| {
+            format!(
+                "Diff [{}{}] - {}",
+                app.diff_view.label(),
+                if app.line_wrap { ", WRAP" } else { "" },
+                file.path.display()
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "Diff [{}{}]",
+                app.diff_view.label(),
+                if app.line_wrap { ", WRAP" } else { "" }
+            )
+        });
     let block = pane_block(&title, app.focus == Focus::Diff);
 
     let Some(file) = app.selected_file() else {
@@ -191,7 +226,7 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rows = diff_rows(file, app.mode);
+    let rows = diff_rows(file, app.mode, app.line_wrap, diff_content_width(area));
     let widths = [
         Constraint::Length(5),
         Constraint::Percentage(50),
@@ -210,7 +245,12 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.diff_state);
 }
 
-fn diff_rows(file: &ChangedFile, mode: ChangeMode) -> Vec<Row<'static>> {
+fn diff_rows(
+    file: &ChangedFile,
+    mode: ChangeMode,
+    line_wrap: bool,
+    content_width: usize,
+) -> Vec<Row<'static>> {
     let mut rendered = Vec::new();
     for hunk in &file.hunks {
         let badge_style = hunk_badge_style(hunk.kind);
@@ -232,21 +272,69 @@ fn diff_rows(file: &ChangedFile, mode: ChangeMode) -> Vec<Row<'static>> {
             rendered.extend(
                 hunk.rows
                     .iter()
-                    .map(|row| render_diff_row(row, mode, hunk.kind)),
+                    .map(|row| render_diff_row(row, mode, hunk.kind, line_wrap, content_width)),
             );
         }
     }
     rendered
 }
 
-fn render_diff_row(row: &DiffRow, mode: ChangeMode, hunk_kind: HunkKind) -> Row<'static> {
+fn render_diff_row(
+    row: &DiffRow,
+    mode: ChangeMode,
+    hunk_kind: HunkKind,
+    line_wrap: bool,
+    content_width: usize,
+) -> Row<'static> {
     let (old_style, new_style) = diff_styles(row.kind, mode, hunk_kind);
+    let old_text = display_text(row.old_text.as_deref(), line_wrap, content_width);
+    let new_text = display_text(row.new_text.as_deref(), line_wrap, content_width);
+    let height = old_text
+        .lines()
+        .count()
+        .max(new_text.lines().count())
+        .max(1) as u16;
     Row::new([
         Cell::from(line_number(row.old_number)).style(old_style),
-        Cell::from(row.old_text.clone().unwrap_or_default()).style(old_style),
+        Cell::from(old_text).style(old_style),
         Cell::from(line_number(row.new_number)).style(new_style),
-        Cell::from(row.new_text.clone().unwrap_or_default()).style(new_style),
+        Cell::from(new_text).style(new_style),
     ])
+    .height(height)
+}
+
+fn diff_content_width(area: Rect) -> usize {
+    const BORDER_WIDTH: u16 = 2;
+    const LINE_NUMBER_WIDTHS: u16 = 10;
+    const COLUMN_SPACING: u16 = 3;
+    const HIGHLIGHT_SYMBOL_WIDTH: u16 = 1;
+
+    usize::from(
+        area.width.saturating_sub(
+            BORDER_WIDTH + LINE_NUMBER_WIDTHS + COLUMN_SPACING + HIGHLIGHT_SYMBOL_WIDTH,
+        ) / 2,
+    )
+    .max(1)
+}
+
+fn display_text(text: Option<&str>, line_wrap: bool, width: usize) -> String {
+    let text = text.unwrap_or_default();
+    if !line_wrap || UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+
+    let mut wrapped = String::new();
+    let mut current_width = 0;
+    for character in text.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if current_width > 0 && current_width + character_width > width {
+            wrapped.push('\n');
+            current_width = 0;
+        }
+        wrapped.push(character);
+        current_width += character_width;
+    }
+    wrapped
 }
 
 fn diff_styles(kind: DiffRowKind, mode: ChangeMode, hunk_kind: HunkKind) -> (Style, Style) {
@@ -331,31 +419,60 @@ fn pane_block<'a>(title: &'a str, active: bool) -> Block<'a> {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let line = if let Some(status) = &app.status {
-        Line::from(vec![
-            Span::styled(" Error: ", Style::new().fg(Color::White).bg(Color::Red)),
-            Span::styled(status, Style::new().fg(Color::LightRed)),
-        ])
+        status_line(status.kind, &status.text)
     } else {
-        Line::from(vec![
-            Span::styled("←/→", Style::new().fg(Color::Cyan)),
-            Span::raw(" panes  "),
-            Span::styled("↑/↓", Style::new().fg(Color::Cyan)),
-            Span::raw(" navigate  "),
-            Span::styled("Tab", Style::new().fg(Color::Cyan)),
-            Span::raw(" mode  "),
-            Span::styled("v", Style::new().fg(Color::Cyan)),
-            Span::raw(" view  "),
-            Span::styled("Enter", Style::new().fg(Color::Cyan)),
-            Span::raw(" fold  "),
-            Span::styled("r", Style::new().fg(Color::Cyan)),
-            Span::raw(" refresh  "),
-            Span::styled("?", Style::new().fg(Color::Cyan)),
-            Span::raw(" help  "),
-            Span::styled("q", Style::new().fg(Color::Cyan)),
-            Span::raw(" quit"),
-        ])
+        navigation_line(app.focus)
     };
     frame.render_widget(Paragraph::new(line), area);
+}
+
+fn navigation_line(focus: Focus) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("←/→", Style::new().fg(Color::Cyan)),
+        Span::raw(" panes  "),
+        Span::styled("↑/↓", Style::new().fg(Color::Cyan)),
+        Span::raw(" navigate  "),
+        Span::styled("Tab", Style::new().fg(Color::Cyan)),
+        Span::raw(" mode  "),
+        Span::styled("Enter", Style::new().fg(Color::Cyan)),
+        Span::raw(" fold  "),
+        Span::styled("r", Style::new().fg(Color::Cyan)),
+        Span::raw(" refresh  "),
+    ];
+    if focus == Focus::Diff {
+        spans.extend([
+            Span::styled("v", Style::new().fg(Color::Cyan)),
+            Span::raw(" view  "),
+            Span::styled("w", Style::new().fg(Color::Cyan)),
+            Span::raw(" wrap  "),
+        ]);
+    }
+    if focus == Focus::Worktrees {
+        spans.extend([
+            Span::styled("d", Style::new().fg(Color::Cyan)),
+            Span::raw(" clean worktree  "),
+        ]);
+    }
+    spans.extend([
+        Span::styled("?", Style::new().fg(Color::Cyan)),
+        Span::raw(" help  "),
+        Span::styled("q", Style::new().fg(Color::Cyan)),
+        Span::raw(" quit"),
+    ]);
+    Line::from(spans)
+}
+
+fn status_line<'a>(kind: StatusKind, message: &'a str) -> Line<'a> {
+    match kind {
+        StatusKind::Info => Line::from(vec![
+            Span::styled(" Success: ", Style::new().fg(Color::Black).bg(Color::Green)),
+            Span::styled(message, Style::new().fg(Color::LightGreen)),
+        ]),
+        StatusKind::Error => Line::from(vec![
+            Span::styled(" Error: ", Style::new().fg(Color::White).bg(Color::Red)),
+            Span::styled(message, Style::new().fg(Color::LightRed)),
+        ]),
+    }
 }
 
 fn render_help(frame: &mut Frame) {
@@ -373,7 +490,9 @@ fn render_help(frame: &mut Frame) {
         help_line("Enter", "Collapse or expand the current hunk"),
         help_line("Tab", "Switch change mode"),
         help_line("v", "Toggle hunks or full-file diff"),
+        help_line("w", "Toggle wrapping of long diff lines"),
         help_line("r", "Refresh worktrees and changes"),
+        help_line("d", "Clean up the selected worktree"),
         help_line("? / Esc", "Close this help"),
         help_line("q", "Quit"),
         Line::from(""),
@@ -400,6 +519,48 @@ fn help_line<'a>(key: &'a str, description: &'a str) -> Line<'a> {
         Span::styled(format!("{key:>14}  "), Style::new().fg(Color::Yellow)),
         Span::raw(description),
     ])
+}
+
+fn render_delete_confirmation(frame: &mut Frame, confirmation: &crate::app::DeleteConfirmation) {
+    let area = centered_rect(66, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let action = if confirmation.prune_only {
+        "The worktree's .git link is missing. This removes only its stale Git metadata."
+    } else {
+        "This permanently deletes the clean worktree directory and its Git metadata."
+    };
+    let text = Text::from(vec![
+        Line::styled("Remove worktree?", Style::new().fg(Color::LightRed).bold()),
+        Line::from(""),
+        Line::from(format!("Branch: {}", confirmation.branch)),
+        Line::from(format!("Path:   {}", confirmation.path.display())),
+        Line::from(""),
+        Line::styled(action, Style::new().fg(Color::Yellow)),
+        if confirmation.prune_only {
+            Line::from("Any remaining directory and files are left untouched.")
+        } else {
+            Line::from("The worktree directory will be deleted.")
+        },
+        Line::from("The branch itself is not deleted."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("y", Style::new().fg(Color::LightRed).bold()),
+            Span::raw(" confirm   "),
+            Span::styled("n / Esc", Style::new().fg(Color::Cyan).bold()),
+            Span::raw(" cancel"),
+        ]),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(Color::LightRed))
+                    .title(" Confirm cleanup "),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn centered_rect(horizontal: u16, vertical: u16, area: Rect) -> Rect {
@@ -433,6 +594,57 @@ mod tests {
     }
 
     #[test]
+    fn informational_status_uses_a_success_label() {
+        let line = status_line(StatusKind::Info, "Pruned stale worktree metadata");
+        assert_eq!(line.spans[0].content.as_ref(), " Success: ");
+        assert_eq!(line.spans[0].style.bg, Some(Color::Green));
+        assert_eq!(
+            line.spans[1].content.as_ref(),
+            "Pruned stale worktree metadata"
+        );
+    }
+
+    #[test]
+    fn error_status_uses_an_error_label() {
+        let line = status_line(StatusKind::Error, "Cleanup failed");
+        assert_eq!(line.spans[0].content.as_ref(), " Error: ");
+        assert_eq!(line.spans[0].style.bg, Some(Color::Red));
+    }
+
+    #[test]
+    fn cleanup_shortcut_is_only_shown_for_worktree_focus() {
+        let worktree_footer = line_text(&navigation_line(Focus::Worktrees));
+        let files_footer = line_text(&navigation_line(Focus::Files));
+        let diff_footer = line_text(&navigation_line(Focus::Diff));
+
+        assert!(worktree_footer.contains("d clean worktree"));
+        assert!(!files_footer.contains("d clean worktree"));
+        assert!(!diff_footer.contains("d clean worktree"));
+        assert!(!worktree_footer.contains("v view"));
+        assert!(!worktree_footer.contains("w wrap"));
+        assert!(!files_footer.contains("v view"));
+        assert!(!files_footer.contains("w wrap"));
+        assert!(diff_footer.contains("v view"));
+        assert!(diff_footer.contains("w wrap"));
+        assert!(!diff_footer.contains("wrap:on"));
+        assert!(!diff_footer.contains("wrap:off"));
+    }
+
+    #[test]
+    fn wraps_long_diff_lines_at_display_width() {
+        assert_eq!(display_text(Some("abcdefghij"), true, 4), "abcd\nefgh\nij");
+        assert_eq!(display_text(Some("abcdefghij"), false, 4), "abcdefghij");
+        assert_eq!(display_text(Some("ab界cd"), true, 4), "ab界\ncd");
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
     fn renders_the_three_pane_interface() {
         let mut file = ChangedFile::empty(PathBuf::from("src/main.rs"), FileStatus::Modified);
         file.additions = 1;
@@ -460,14 +672,32 @@ mod tests {
             base: "main".into(),
             mode: ChangeMode::Uncommitted,
             diff_view: DiffView::Hunks,
+            line_wrap: false,
             focus: Focus::Worktrees,
-            worktrees: vec![Worktree {
-                path: PathBuf::from("/repo"),
-                branch: "feature".into(),
-                head: "12345678".into(),
-                dirty: true,
-                is_current: true,
-            }],
+            worktrees: vec![
+                Worktree {
+                    path: PathBuf::from("/repo"),
+                    branch: "feature".into(),
+                    head: "12345678".into(),
+                    dirty: true,
+                    is_current: true,
+                    is_main: true,
+                    available: true,
+                    prunable_reason: None,
+                    locked_reason: None,
+                },
+                Worktree {
+                    path: PathBuf::from("/missing-worktree"),
+                    branch: "stale".into(),
+                    head: "87654321".into(),
+                    dirty: false,
+                    is_current: false,
+                    is_main: false,
+                    available: false,
+                    prunable_reason: Some("gitdir file points to non-existent location".into()),
+                    locked_reason: None,
+                },
+            ],
             files: vec![file],
             file_tree: vec![crate::model::FileTreeRow {
                 label: "└── src/main.rs".into(),
@@ -477,6 +707,7 @@ mod tests {
             file_state,
             diff_state,
             show_help: false,
+            delete_confirmation: None,
             status: None,
         };
         let backend = TestBackend::new(140, 30);
@@ -494,6 +725,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(rendered.contains("Worktrees"));
+        assert!(rendered.contains("MISSING"));
         assert!(rendered.contains("Files (1)"));
         assert!(rendered.contains("src/main.rs"));
         assert!(rendered.contains("STAGED"));
