@@ -52,9 +52,11 @@ Use a three-pane, file-explorer-style layout. The changed-files pane renders the
 |                 |     └── git.rs      |                 |             |
 ```
 
-Directories in the tree are visual grouping rows and cannot be selected. `Up` and `Down` jump directly between changed files. The diff pane occupies 60 percent of the terminal and is scrollable. Press `s` to switch between a side-by-side Split layout and a single-column Unified layout where deleted lines appear in red above added lines in green. Press `v` to switch between a concise view containing Git diff hunks with surrounding context and a full-file view containing every line of the changed file. Press `w` to toggle wrapping of long lines. All layouts include old and new line numbers.
+Directories in the tree are visual grouping rows and cannot be selected. `Up` and `Down` jump directly between changed files. The diff pane occupies 60 percent of the terminal and is scrollable. Press `s` to switch between a side-by-side Split layout and a single-column Unified layout where deleted lines appear in red above added lines in green. Added, untracked, and deleted files always use the full-width Unified layout because only one side of the comparison exists. This automatic layout does not change the user's preference for modified files. Press `v` to switch between a concise view containing Git diff hunks with surrounding context and a full-file view containing every line of the changed file. Long lines do not wrap by default; press `w` to toggle wrapping. All layouts include old and new line numbers.
 
-Press `Space` to expand the focused panel across most of the content area. The other two panels remain visible as narrow rails showing one dot per logical item and an arrow beside the selected item. While expanded, `Left` and `Right` switch to the adjacent panel and keep the newly focused panel expanded. Press `Space` again to restore the three-column layout. Terminals narrower than 120 columns start in expanded mode automatically. This is decided once at startup, so a manual `Space` toggle is not overridden afterward.
+Press `Space` to expand the focused panel across most of the content area. The other two panels remain visible as narrow rails showing one dot per logical item and an arrow beside the selected item. While expanded, `Left` and `Right` switch to the adjacent panel and keep the newly focused panel expanded. Press `Space` again to restore the three-column layout. Terminals narrower than 120 columns start in expanded mode with Unified diff layout. Wider terminals start with Split diff layout. This is decided once at startup, so manual `Space` and `s` toggles are not overridden afterward.
+
+Press `t` to toggle between the default Columns layout and a Stacked layout. In Stacked layout, Worktrees appears above Files in a 25 percent sidebar and Diff uses the remaining 75 percent of the terminal width. Expanded mode is independent of this preference and keeps using compact rails for inactive panels.
 
 ## Worktrees
 
@@ -104,6 +106,7 @@ The base branch defaults to `main` and can be changed with `--base <branch>`. A 
 - `Page Up`, `Page Down`, `Home`, and `End` move through large diffs
 - `Tab` switches between Uncommitted and Branch modes
 - `Space` expands the focused panel or restores the three-column layout
+- `t` toggles between Columns and Stacked panel layouts
 - `v` switches the diff pane between Hunks and Full File views
 - `s` switches the diff panel between Split and Unified layouts
 - `w` toggles wrapping of long lines in the diff pane

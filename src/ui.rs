@@ -2,23 +2,25 @@ use std::path::Path;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap,
+        Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, Wrap,
     },
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    app::{App, Focus, StatusKind},
+    app::{App, Focus, PanelLayout, StatusKind},
     model::{ChangeMode, ChangedFile, DiffLayout, DiffRow, DiffRowKind, FileStatus, HunkKind},
 };
 
 const ACTIVE_BORDER: Color = Color::Cyan;
 const INACTIVE_BORDER: Color = Color::DarkGray;
 const COMPACT_LAYOUT_THRESHOLD: u16 = 120;
+const WORKTREE_ITEM_HEIGHT: usize = 2;
 const SELECTED: Style = Style::new()
     .fg(Color::Black)
     .bg(Color::Cyan)
@@ -33,7 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     render_header(frame, app, header);
-    let [worktrees, files, diff] = panel_areas(body, app.focus, app.expanded);
+    let [worktrees, files, diff] = panel_areas(body, app.focus, app.expanded, app.panel_layout);
     if app.expanded && app.focus != Focus::Worktrees {
         render_compact_panel(
             frame,
@@ -77,9 +79,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn panel_areas(area: Rect, focus: Focus, expanded: bool) -> [Rect; 3] {
-    let constraints = if expanded {
-        match focus {
+fn panel_areas(area: Rect, focus: Focus, expanded: bool, panel_layout: PanelLayout) -> [Rect; 3] {
+    if expanded {
+        let constraints = match focus {
             Focus::Worktrees => [
                 Constraint::Fill(1),
                 Constraint::Length(5),
@@ -95,15 +97,36 @@ fn panel_areas(area: Rect, focus: Focus, expanded: bool) -> [Rect; 3] {
                 Constraint::Length(5),
                 Constraint::Fill(1),
             ],
-        }
-    } else {
-        [
+        };
+        return Layout::horizontal(constraints).areas(area);
+    }
+
+    match panel_layout {
+        PanelLayout::Columns => Layout::horizontal([
             Constraint::Percentage(18),
             Constraint::Percentage(22),
             Constraint::Percentage(60),
-        ]
-    };
-    Layout::horizontal(constraints).areas(area)
+        ])
+        .areas(area),
+        PanelLayout::SidebarLeft => {
+            let [sidebar, diff] =
+                Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)])
+                    .areas(area);
+            let [worktrees, files] =
+                Layout::vertical([Constraint::Percentage(35), Constraint::Percentage(65)])
+                    .areas(sidebar);
+            [worktrees, files, diff]
+        }
+        PanelLayout::SidebarTop => {
+            let [top, diff] =
+                Layout::vertical([Constraint::Percentage(25), Constraint::Percentage(75)])
+                    .areas(area);
+            let [worktrees, files] =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .areas(top);
+            [worktrees, files, diff]
+        }
+    }
 }
 
 fn render_compact_panel(
@@ -197,10 +220,59 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let list = List::new(items)
-        .block(pane_block("Worktrees", app.focus == Focus::Worktrees))
         .highlight_style(SELECTED)
         .highlight_symbol("› ");
-    frame.render_stateful_widget(list, area, &mut app.worktree_state);
+    let viewport_length =
+        (usize::from(area.height.saturating_sub(2)) / WORKTREE_ITEM_HEIGHT).max(1);
+    let has_overflow = app.worktrees.len() > viewport_length;
+    if !has_overflow {
+        frame.render_stateful_widget(
+            list.block(pane_block("Worktrees", app.focus == Focus::Worktrees)),
+            area,
+            &mut app.worktree_state,
+        );
+        return;
+    }
+
+    frame.render_widget(pane_block("Worktrees", app.focus == Focus::Worktrees), area);
+    let content_area = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    let list_area = Rect {
+        width: content_area.width.saturating_sub(1),
+        ..content_area
+    };
+    frame.render_stateful_widget(list, list_area, &mut app.worktree_state);
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"))
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .style(Style::new().fg(if app.focus == Focus::Worktrees {
+            ACTIVE_BORDER
+        } else {
+            INACTIVE_BORDER
+        }));
+    let mut scrollbar_state = ScrollbarState::new(app.worktrees.len())
+        .viewport_content_length(viewport_length)
+        .position(scrollbar_position(
+            app.worktree_state.offset(),
+            app.worktrees.len(),
+            viewport_length,
+        ));
+    frame.render_stateful_widget(scrollbar, content_area, &mut scrollbar_state);
+}
+
+fn scrollbar_position(offset: usize, content_length: usize, viewport_length: usize) -> usize {
+    let max_offset = content_length.saturating_sub(viewport_length);
+    let max_position = content_length.saturating_sub(1);
+    offset
+        .min(max_offset)
+        .checked_mul(max_position)
+        .and_then(|position| position.checked_div(max_offset))
+        .unwrap_or(0)
 }
 
 fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -242,13 +314,19 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
+    let effective_layout = app
+        .selected_file()
+        .map(|file| effective_diff_layout(file, app.diff_layout))
+        .unwrap_or(app.diff_layout);
+    let automatic_layout = effective_layout != app.diff_layout;
     let title = app
         .selected_file()
         .map(|file| {
             format!(
-                "Diff [{}, {}{}] - {}",
+                "Diff [{}, {}{}{}] - {}",
                 app.diff_view.label(),
-                app.diff_layout.label(),
+                effective_layout.label(),
+                if automatic_layout { " AUTO" } else { "" },
                 if app.line_wrap { ", WRAP" } else { "" },
                 file.path.display()
             )
@@ -257,7 +335,7 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             format!(
                 "Diff [{}, {}{}]",
                 app.diff_view.label(),
-                app.diff_layout.label(),
+                effective_layout.label(),
                 if app.line_wrap { ", WRAP" } else { "" }
             )
         });
@@ -301,8 +379,8 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rows = diff_rows(file, app.mode, app.diff_layout, app.line_wrap, area);
-    let (widths, header) = match app.diff_layout {
+    let rows = diff_rows(file, app.mode, effective_layout, app.line_wrap, area);
+    let (widths, header) = match effective_layout {
         DiffLayout::Split => (
             vec![
                 Constraint::Length(5),
@@ -332,6 +410,13 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         .row_highlight_style(Style::new().bg(Color::Rgb(35, 42, 52)))
         .highlight_symbol("›");
     frame.render_stateful_widget(table, area, &mut app.diff_state);
+}
+
+fn effective_diff_layout(file: &ChangedFile, preferred: DiffLayout) -> DiffLayout {
+    match file.status {
+        FileStatus::Added | FileStatus::Deleted | FileStatus::Untracked => DiffLayout::Unified,
+        FileStatus::Modified | FileStatus::Renamed | FileStatus::Conflicted => preferred,
+    }
 }
 
 fn diff_rows(
@@ -695,6 +780,8 @@ fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
         Span::raw(" mode  "),
         Span::styled("Space", Style::new().fg(Color::Cyan)),
         Span::raw(if expanded { " minimize  " } else { " expand  " }),
+        Span::styled("t", Style::new().fg(Color::Cyan)),
+        Span::raw(" layout  "),
         Span::styled("r", Style::new().fg(Color::Cyan)),
         Span::raw(" refresh  "),
     ];
@@ -753,6 +840,7 @@ fn render_help(frame: &mut Frame) {
         help_line("Enter", "Collapse or expand the current hunk"),
         help_line("Tab", "Switch change mode"),
         help_line("Space", "Expand or restore the focused panel"),
+        help_line("t", "Cycle panel layout"),
         help_line("v", "Toggle hunks or full-file diff"),
         help_line("s", "Toggle split or unified diff layout"),
         help_line("w", "Toggle wrapping of long diff lines"),
@@ -919,6 +1007,50 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_layout_puts_files_below_worktrees_and_widens_diff() {
+        let area = Rect::new(0, 0, 100, 40);
+        let [worktrees, files, diff] =
+            panel_areas(area, Focus::Worktrees, false, PanelLayout::SidebarLeft);
+
+        assert_eq!(worktrees.x, 0);
+        assert_eq!(files.x, 0);
+        assert_eq!(worktrees.width, 25);
+        assert_eq!(files.width, 25);
+        assert_eq!(files.y, worktrees.bottom());
+        assert_eq!(diff.x, 25);
+        assert_eq!(diff.width, 75);
+        assert_eq!(diff.height, 40);
+    }
+
+    #[test]
+    fn vertical_layout_puts_diff_below_full_width_top_panels() {
+        let area = Rect::new(0, 0, 100, 40);
+        let [worktrees, files, diff] =
+            panel_areas(area, Focus::Worktrees, false, PanelLayout::SidebarTop);
+
+        assert_eq!(worktrees.x, 0);
+        assert_eq!(worktrees.y, 0);
+        assert_eq!(worktrees.width, 50);
+        assert_eq!(files.x, worktrees.right());
+        assert_eq!(files.y, 0);
+        assert_eq!(files.width, 50);
+        assert_eq!(diff.x, 0);
+        assert_eq!(diff.y, 10);
+        assert_eq!(diff.width, 100);
+        assert_eq!(diff.height, 30);
+    }
+
+    #[test]
+    fn expanded_layout_ignores_the_panel_layout_preference() {
+        let area = Rect::new(0, 0, 100, 40);
+        let columns = panel_areas(area, Focus::Diff, true, PanelLayout::Columns);
+        let sidebar_left = panel_areas(area, Focus::Diff, true, PanelLayout::SidebarLeft);
+        let sidebar_top = panel_areas(area, Focus::Diff, true, PanelLayout::SidebarTop);
+        assert_eq!(columns, sidebar_left);
+        assert_eq!(columns, sidebar_top);
+    }
+
+    #[test]
     fn wraps_long_diff_lines_at_display_width() {
         assert_eq!(display_text(Some("abcdefghij"), true, 4), "abcd\nefgh\nij");
         assert_eq!(display_text(Some("abcdefghij"), false, 4), "abcdefghij");
@@ -947,6 +1079,27 @@ mod tests {
         assert!(
             diff_content_width(area, DiffLayout::Unified)
                 > diff_content_width(area, DiffLayout::Split)
+        );
+    }
+
+    #[test]
+    fn one_sided_files_always_use_unified_layout() {
+        for status in [
+            FileStatus::Added,
+            FileStatus::Deleted,
+            FileStatus::Untracked,
+        ] {
+            let file = ChangedFile::empty("file".into(), status);
+            assert_eq!(
+                effective_diff_layout(&file, DiffLayout::Split),
+                DiffLayout::Unified
+            );
+        }
+
+        let modified = ChangedFile::empty("file".into(), FileStatus::Modified);
+        assert_eq!(
+            effective_diff_layout(&modified, DiffLayout::Split),
+            DiffLayout::Split
         );
     }
 
@@ -1000,6 +1153,7 @@ mod tests {
             line_wrap: false,
             expanded: false,
             initial_layout_applied: true,
+            panel_layout: PanelLayout::Columns,
             focus: Focus::Worktrees,
             worktrees: vec![
                 Worktree {
@@ -1037,7 +1191,18 @@ mod tests {
             delete_confirmation: None,
             status: None,
         };
-        let backend = TestBackend::new(140, 30);
+        app.worktrees.extend((1..=3).map(|index| Worktree {
+            path: PathBuf::from(format!("/demo-worktree-{index}")),
+            branch: format!("demo-{index}"),
+            head: format!("0000000{index}"),
+            dirty: true,
+            is_current: false,
+            is_main: false,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        }));
+        let backend = TestBackend::new(140, 12);
         let mut terminal = Terminal::new(backend).expect("test terminal should be created");
 
         terminal
@@ -1058,5 +1223,26 @@ mod tests {
         assert!(rendered.contains("STAGED"));
         assert!(rendered.contains("before"));
         assert!(rendered.contains("after"));
+        assert!(rendered.contains('▲'));
+        assert!(rendered.contains('▼'));
+
+        app.worktree_state.select(Some(app.worktrees.len() - 1));
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("interface should render after scrolling");
+        let body = Rect::new(0, 2, 140, 9);
+        let [worktrees, _, _] = panel_areas(body, app.focus, app.expanded, app.panel_layout);
+        let content_area = worktrees.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let scrollbar_x = content_area.right() - 1;
+        assert!(
+            terminal.backend().buffer()[(scrollbar_x, content_area.bottom() - 2)].symbol() == "█"
+        );
+
+        assert_eq!(scrollbar_position(0, 5, 3), 0);
+        assert_eq!(scrollbar_position(1, 5, 3), 2);
+        assert_eq!(scrollbar_position(2, 5, 3), 4);
     }
 }

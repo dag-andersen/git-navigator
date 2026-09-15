@@ -23,6 +23,24 @@ pub enum Focus {
     Diff,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PanelLayout {
+    #[default]
+    Columns,
+    SidebarLeft,
+    SidebarTop,
+}
+
+impl PanelLayout {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Columns => Self::SidebarLeft,
+            Self::SidebarLeft => Self::SidebarTop,
+            Self::SidebarTop => Self::Columns,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeleteConfirmation {
     pub path: PathBuf,
@@ -69,6 +87,7 @@ pub struct App {
     pub line_wrap: bool,
     pub expanded: bool,
     pub initial_layout_applied: bool,
+    pub panel_layout: PanelLayout,
     pub focus: Focus,
     pub worktrees: Vec<Worktree>,
     pub files: Vec<ChangedFile>,
@@ -118,6 +137,7 @@ impl App {
             line_wrap: false,
             expanded: false,
             initial_layout_applied: false,
+            panel_layout: PanelLayout::Columns,
             focus: Focus::Worktrees,
             worktrees,
             files,
@@ -163,6 +183,7 @@ impl App {
             KeyCode::Char('s') => self.diff_layout = self.diff_layout.toggle(),
             KeyCode::Char('w') => self.line_wrap = !self.line_wrap,
             KeyCode::Char(' ') => self.expanded = !self.expanded,
+            KeyCode::Char('t') => self.panel_layout = self.panel_layout.toggle(),
             KeyCode::Left | KeyCode::Char('h') => self.focus = self.focus.left(),
             KeyCode::Right | KeyCode::Char('l') => self.focus = self.focus.right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
@@ -187,6 +208,11 @@ impl App {
             return;
         }
         self.expanded = terminal_width < threshold;
+        self.diff_layout = if terminal_width < threshold {
+            DiffLayout::Unified
+        } else {
+            DiffLayout::Split
+        };
         self.initial_layout_applied = true;
     }
 
@@ -876,12 +902,20 @@ mod tests {
     }
 
     #[test]
+    fn panel_layout_cycles_through_all_layouts() {
+        assert_eq!(PanelLayout::Columns.toggle(), PanelLayout::SidebarLeft);
+        assert_eq!(PanelLayout::SidebarLeft.toggle(), PanelLayout::SidebarTop);
+        assert_eq!(PanelLayout::SidebarTop.toggle(), PanelLayout::Columns);
+    }
+
+    #[test]
     fn narrow_initial_layout_starts_expanded_once() {
         let mut app = test_app();
         app.initial_layout_applied = false;
 
         app.apply_initial_layout(119, 120);
         assert!(app.expanded);
+        assert_eq!(app.diff_layout, crate::model::DiffLayout::Unified);
         assert!(app.initial_layout_applied);
 
         app.expanded = false;
@@ -897,6 +931,7 @@ mod tests {
 
         app.apply_initial_layout(120, 120);
         assert!(!app.expanded);
+        assert_eq!(app.diff_layout, crate::model::DiffLayout::Split);
     }
 
     fn test_app() -> App {
@@ -909,6 +944,7 @@ mod tests {
             line_wrap: false,
             expanded: false,
             initial_layout_applied: true,
+            panel_layout: PanelLayout::Columns,
             focus: Focus::Worktrees,
             worktrees: vec![],
             files: vec![],
