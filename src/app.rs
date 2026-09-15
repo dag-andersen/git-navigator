@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::{
     git,
-    model::{ChangeMode, ChangedFile, DiffView, FileTreeRow, Worktree},
+    model::{ChangeMode, ChangedFile, DiffLayout, DiffView, FileTreeRow, Worktree},
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -65,7 +65,10 @@ pub struct App {
     pub base: String,
     pub mode: ChangeMode,
     pub diff_view: DiffView,
+    pub diff_layout: DiffLayout,
     pub line_wrap: bool,
+    pub expanded: bool,
+    pub initial_layout_applied: bool,
     pub focus: Focus,
     pub worktrees: Vec<Worktree>,
     pub files: Vec<ChangedFile>,
@@ -111,7 +114,10 @@ impl App {
             base,
             mode: ChangeMode::Uncommitted,
             diff_view: DiffView::Hunks,
+            diff_layout: DiffLayout::Split,
             line_wrap: false,
+            expanded: false,
+            initial_layout_applied: false,
             focus: Focus::Worktrees,
             worktrees,
             files,
@@ -154,7 +160,9 @@ impl App {
             KeyCode::Char('d') if self.focus == Focus::Worktrees => self.request_worktree_removal(),
             KeyCode::Tab => self.toggle_mode(),
             KeyCode::Char('v') => self.toggle_diff_view(),
+            KeyCode::Char('s') => self.diff_layout = self.diff_layout.toggle(),
             KeyCode::Char('w') => self.line_wrap = !self.line_wrap,
+            KeyCode::Char(' ') => self.expanded = !self.expanded,
             KeyCode::Left | KeyCode::Char('h') => self.focus = self.focus.left(),
             KeyCode::Right | KeyCode::Char('l') => self.focus = self.focus.right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
@@ -172,6 +180,14 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    pub fn apply_initial_layout(&mut self, terminal_width: u16, threshold: u16) {
+        if self.initial_layout_applied {
+            return;
+        }
+        self.expanded = terminal_width < threshold;
+        self.initial_layout_applied = true;
     }
 
     pub fn selected_worktree(&self) -> Option<&Worktree> {
@@ -197,6 +213,23 @@ impl App {
                     .sum()
             })
             .unwrap_or(0)
+    }
+
+    pub fn selected_file_index(&self) -> Option<usize> {
+        self.file_state
+            .selected()
+            .and_then(|row| self.file_tree.get(row))
+            .and_then(|row| row.file_index)
+    }
+
+    pub fn selected_hunk_index(&self) -> Option<usize> {
+        let file = self.selected_file()?;
+        let row = self.diff_state.selected()?;
+        hunk_at_row(file, row)
+    }
+
+    pub fn modal_open(&self) -> bool {
+        self.show_help || self.delete_confirmation.is_some()
     }
 
     fn move_up(&mut self) {
@@ -248,12 +281,7 @@ impl App {
     }
 
     fn toggle_selected_hunk(&mut self) {
-        let Some(file_index) = self
-            .file_state
-            .selected()
-            .and_then(|row| self.file_tree.get(row))
-            .and_then(|row| row.file_index)
-        else {
+        let Some(file_index) = self.selected_file_index() else {
             return;
         };
         let Some(selected_row) = self.diff_state.selected() else {
@@ -285,11 +313,12 @@ impl App {
         self.reload_files(selected_file.as_deref());
     }
 
-    fn refresh(&mut self) {
+    pub fn refresh(&mut self) {
         let selected_worktree = self
             .selected_worktree()
             .map(|worktree| worktree.path.clone());
         let selected_file = self.selected_file().map(|file| file.path.clone());
+        let diff_position = self.diff_position();
 
         match git::discover_worktrees(&self.directory) {
             Ok(worktrees) => {
@@ -304,7 +333,7 @@ impl App {
                     })
                     .or((!self.worktrees.is_empty()).then_some(0));
                 self.worktree_state.select(selected);
-                self.reload_files(selected_file.as_deref());
+                self.reload_files_with_position(selected_file.as_deref(), diff_position.as_ref());
             }
             Err(error) => self.set_error(format!("Refresh failed: {error:#}")),
         }
@@ -378,6 +407,14 @@ impl App {
     }
 
     fn reload_files(&mut self, preferred_file: Option<&Path>) {
+        self.reload_files_with_position(preferred_file, None);
+    }
+
+    fn reload_files_with_position(
+        &mut self,
+        preferred_file: Option<&Path>,
+        diff_position: Option<&DiffPosition>,
+    ) {
         let Some(worktree) = self.selected_worktree() else {
             self.files.clear();
             self.file_tree.clear();
@@ -417,11 +454,7 @@ impl App {
                     })
                     .or_else(|| first_file_row(&self.file_tree));
                 self.file_state.select(selected);
-                self.diff_state.select(first_diff_row(
-                    &self.files,
-                    &self.file_tree,
-                    self.file_state.selected(),
-                ));
+                self.restore_diff_position(diff_position);
                 self.status = None;
             }
             Err(error) => {
@@ -431,6 +464,48 @@ impl App {
                 self.diff_state.select(None);
                 self.set_error(format!("Could not load changes: {error:#}"));
             }
+        }
+    }
+
+    fn diff_position(&self) -> Option<DiffPosition> {
+        let file = self.selected_file()?;
+        let selected_row = self.diff_state.selected().unwrap_or(0);
+        let (hunk_index, row_in_hunk) = diff_row_position(file, selected_row)?;
+        Some(DiffPosition {
+            hunk_header: file.hunks[hunk_index].header.clone(),
+            row_in_hunk,
+            scroll_offset: self.diff_state.offset(),
+            collapsed_hunks: file
+                .hunks
+                .iter()
+                .filter(|hunk| hunk.collapsed)
+                .map(|hunk| hunk.header.clone())
+                .collect(),
+        })
+    }
+
+    fn restore_diff_position(&mut self, position: Option<&DiffPosition>) {
+        let Some(file_index) = self.selected_file_index() else {
+            self.diff_state.select(None);
+            return;
+        };
+        if let Some(position) = position {
+            for hunk in &mut self.files[file_index].hunks {
+                hunk.collapsed = position.collapsed_hunks.contains(&hunk.header);
+            }
+            let selected = diff_row_for_position(&self.files[file_index], position).or_else(|| {
+                first_diff_row(&self.files, &self.file_tree, self.file_state.selected())
+            });
+            self.diff_state.select(selected);
+            let max_offset = self.diff_row_count().saturating_sub(1);
+            *self.diff_state.offset_mut() = position.scroll_offset.min(max_offset);
+        } else {
+            self.diff_state.select(first_diff_row(
+                &self.files,
+                &self.file_tree,
+                self.file_state.selected(),
+            ));
+            *self.diff_state.offset_mut() = 0;
         }
     }
 
@@ -447,6 +522,14 @@ impl App {
             text: message.into(),
         });
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DiffPosition {
+    hunk_header: String,
+    row_in_hunk: usize,
+    scroll_offset: usize,
+    collapsed_hunks: Vec<String>,
 }
 
 fn moved_selection(selected: Option<usize>, length: usize, delta: isize) -> Option<usize> {
@@ -583,10 +666,35 @@ fn hunk_at_row(file: &ChangedFile, row: usize) -> Option<usize> {
     None
 }
 
+fn diff_row_position(file: &ChangedFile, row: usize) -> Option<(usize, usize)> {
+    let mut start = 0;
+    for (index, hunk) in file.hunks.iter().enumerate() {
+        let height = 1 + usize::from(!hunk.collapsed) * hunk.rows.len();
+        if row < start + height {
+            return Some((index, row.saturating_sub(start)));
+        }
+        start += height;
+    }
+    None
+}
+
+fn diff_row_for_position(file: &ChangedFile, position: &DiffPosition) -> Option<usize> {
+    let mut start = 0;
+    for hunk in &file.hunks {
+        if hunk.header == position.hunk_header {
+            let max_row = if hunk.collapsed { 0 } else { hunk.rows.len() };
+            return Some(start + position.row_in_hunk.min(max_row));
+        }
+        start += 1 + usize::from(!hunk.collapsed) * hunk.rows.len();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{DiffHunk, HunkKind};
+    use ratatui::crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
 
     #[test]
     fn selection_stops_at_list_boundaries() {
@@ -687,5 +795,139 @@ mod tests {
             locked_reason: None,
         };
         assert!(worktree.is_missing());
+    }
+
+    #[test]
+    fn restores_diff_position_and_collapsed_hunks() {
+        let mut file = ChangedFile::empty(
+            PathBuf::from("src/main.rs"),
+            crate::model::FileStatus::Modified,
+        );
+        file.hunks = vec![
+            DiffHunk {
+                header: "@@ -1,2 +1,2 @@".into(),
+                kind: HunkKind::Unstaged,
+                rows: vec![
+                    crate::model::DiffRow {
+                        old_number: Some(1),
+                        new_number: Some(1),
+                        old_text: Some("one".into()),
+                        new_text: Some("one".into()),
+                        kind: crate::model::DiffRowKind::Context,
+                    },
+                    crate::model::DiffRow {
+                        old_number: Some(2),
+                        new_number: Some(2),
+                        old_text: Some("old".into()),
+                        new_text: Some("new".into()),
+                        kind: crate::model::DiffRowKind::Modified,
+                    },
+                ],
+                collapsed: true,
+            },
+            DiffHunk {
+                header: "@@ -10 +10 @@".into(),
+                kind: HunkKind::Unstaged,
+                rows: vec![crate::model::DiffRow {
+                    old_number: Some(10),
+                    new_number: Some(10),
+                    old_text: Some("before".into()),
+                    new_text: Some("after".into()),
+                    kind: crate::model::DiffRowKind::Modified,
+                }],
+                collapsed: false,
+            },
+        ];
+        let position = DiffPosition {
+            hunk_header: "@@ -10 +10 @@".into(),
+            row_in_hunk: 1,
+            scroll_offset: 1,
+            collapsed_hunks: vec!["@@ -1,2 +1,2 @@".into()],
+        };
+
+        for hunk in &mut file.hunks {
+            hunk.collapsed = position.collapsed_hunks.contains(&hunk.header);
+        }
+        assert_eq!(diff_row_for_position(&file, &position), Some(2));
+        assert!(file.hunks[0].collapsed);
+        assert!(!file.hunks[1].collapsed);
+    }
+
+    #[test]
+    fn expanded_mode_follows_horizontal_focus_navigation() {
+        let mut app = test_app();
+        assert!(!app.expanded);
+
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert!(app.expanded);
+        assert_eq!(app.focus, Focus::Worktrees);
+
+        app.handle_key(key(KeyCode::Right));
+        assert!(app.expanded);
+        assert_eq!(app.focus, Focus::Files);
+
+        app.handle_key(key(KeyCode::Right));
+        assert!(app.expanded);
+        assert_eq!(app.focus, Focus::Diff);
+
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert!(!app.expanded);
+        assert_eq!(app.focus, Focus::Diff);
+    }
+
+    #[test]
+    fn narrow_initial_layout_starts_expanded_once() {
+        let mut app = test_app();
+        app.initial_layout_applied = false;
+
+        app.apply_initial_layout(119, 120);
+        assert!(app.expanded);
+        assert!(app.initial_layout_applied);
+
+        app.expanded = false;
+        app.apply_initial_layout(80, 120);
+        assert!(!app.expanded, "manual minimize must remain authoritative");
+    }
+
+    #[test]
+    fn wide_initial_layout_starts_minimized() {
+        let mut app = test_app();
+        app.initial_layout_applied = false;
+        app.expanded = true;
+
+        app.apply_initial_layout(120, 120);
+        assert!(!app.expanded);
+    }
+
+    fn test_app() -> App {
+        App {
+            directory: PathBuf::from("/repo"),
+            base: "main".into(),
+            mode: ChangeMode::Uncommitted,
+            diff_view: crate::model::DiffView::Hunks,
+            diff_layout: crate::model::DiffLayout::Split,
+            line_wrap: false,
+            expanded: false,
+            initial_layout_applied: true,
+            focus: Focus::Worktrees,
+            worktrees: vec![],
+            files: vec![],
+            file_tree: vec![],
+            worktree_state: ListState::default(),
+            file_state: ListState::default(),
+            diff_state: TableState::default(),
+            show_help: false,
+            delete_confirmation: None,
+            status: None,
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
     }
 }

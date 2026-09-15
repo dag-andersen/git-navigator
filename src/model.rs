@@ -39,6 +39,29 @@ impl DiffView {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DiffLayout {
+    #[default]
+    Split,
+    Unified,
+}
+
+impl DiffLayout {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Split => Self::Unified,
+            Self::Unified => Self::Split,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Split => "SPLIT",
+            Self::Unified => "UNIFIED",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Worktree {
     pub path: PathBuf,
@@ -159,5 +182,11 @@ mod tests {
     fn toggles_diff_views() {
         assert_eq!(DiffView::Hunks.toggle(), DiffView::FullFile);
         assert_eq!(DiffView::FullFile.toggle(), DiffView::Hunks);
+    }
+
+    #[test]
+    fn toggles_diff_layouts() {
+        assert_eq!(DiffLayout::Split.toggle(), DiffLayout::Unified);
+        assert_eq!(DiffLayout::Unified.toggle(), DiffLayout::Split);
     }
 }

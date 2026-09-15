@@ -71,6 +71,14 @@ pub fn discover_worktrees(directory: &Path) -> Result<Vec<Worktree>> {
     Ok(worktrees)
 }
 
+pub fn common_git_dir(directory: &Path) -> Result<PathBuf> {
+    let path = git_text(
+        directory,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    Ok(PathBuf::from(path.trim()))
+}
+
 pub fn remove_worktree(repository: &Path, worktree: &Worktree) -> Result<()> {
     if worktree.is_current {
         bail!("cannot remove the worktree currently opened by git-navigator");

@@ -52,7 +52,9 @@ Use a three-pane, file-explorer-style layout. The changed-files pane renders the
 |                 |     └── git.rs      |                 |             |
 ```
 
-Directories in the tree are visual grouping rows and cannot be selected. `Up` and `Down` jump directly between changed files. The diff pane occupies 60 percent of the terminal and displays each file as a scrollable side-by-side diff, with the old version on the left and the new version on the right. Press `v` to switch between a concise view containing Git diff hunks with surrounding context and a full-file view containing every line of the changed file. Press `w` to toggle wrapping of long lines. Both views include old and new line numbers.
+Directories in the tree are visual grouping rows and cannot be selected. `Up` and `Down` jump directly between changed files. The diff pane occupies 60 percent of the terminal and is scrollable. Press `s` to switch between a side-by-side Split layout and a single-column Unified layout where deleted lines appear in red above added lines in green. Press `v` to switch between a concise view containing Git diff hunks with surrounding context and a full-file view containing every line of the changed file. Press `w` to toggle wrapping of long lines. All layouts include old and new line numbers.
+
+Press `Space` to expand the focused panel across most of the content area. The other two panels remain visible as narrow rails showing one dot per logical item and an arrow beside the selected item. While expanded, `Left` and `Right` switch to the adjacent panel and keep the newly focused panel expanded. Press `Space` again to restore the three-column layout. Terminals narrower than 120 columns start in expanded mode automatically. This is decided once at startup, so a manual `Space` toggle is not overridden afterward.
 
 ## Worktrees
 
@@ -61,6 +63,12 @@ Discover and list all Git worktrees associated with the current repository. Each
 The app is intended to make worktrees created by developers or AI agents quick to inspect without changing directories.
 
 Missing or disconnected worktrees are marked `MISSING` instead of producing a Git diff error. With the Worktrees pane focused, press `d` to clean up the selected worktree after confirming the action. For a worktree whose `.git` link is missing, cleanup identifies the exact administrative entry whose recorded path matches the selected worktree, then removes only that stale Git metadata. Any remaining directory and files are left untouched. For an existing clean linked worktree, cleanup removes its directory and Git metadata but leaves its branch intact. The current worktree, main worktree, locked worktrees, and dirty worktrees are protected from removal.
+
+## Automatic refresh
+
+Git Navigator watches the selected worktree and the repository's Git metadata for changes. File creation, modification, deletion, staging, commits, and worktree metadata changes trigger an automatic refresh after a 500 millisecond debounce. Refreshes are limited to at most once per second, with a two-second maximum delay during continuous activity. A reconciliation refresh runs every 30 seconds in case the operating system coalesces or misses an event.
+
+Only the selected worktree is watched recursively. Switching worktrees updates the watcher and refreshes that worktree immediately. Automatic refresh preserves the selected worktree, selected file, diff position, scroll offset, and collapsed hunks when the corresponding content still exists. Press `r` at any time for an immediate manual refresh.
 
 ## Change modes
 
@@ -84,7 +92,7 @@ In this mode, line provenance is not important:
 
 - Added lines are green
 - Deleted lines are red
-- Files containing both additions and deletions are blue in the file list
+- Files containing both additions and deletions are orange in the file list
 
 The base branch defaults to `main` and can be changed with `--base <branch>`. A local branch is preferred when both a local branch and `origin/<branch>` exist.
 
@@ -95,7 +103,9 @@ The base branch defaults to `main` and can be changed with `--base <branch>`. A 
 - `h`, `j`, `k`, and `l` provide equivalent navigation
 - `Page Up`, `Page Down`, `Home`, and `End` move through large diffs
 - `Tab` switches between Uncommitted and Branch modes
+- `Space` expands the focused panel or restores the three-column layout
 - `v` switches the diff pane between Hunks and Full File views
+- `s` switches the diff panel between Split and Unified layouts
 - `w` toggles wrapping of long lines in the diff pane
 - `Enter` expands or collapses the selected diff hunk
 - `r` refreshes worktrees and Git state

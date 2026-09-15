@@ -13,34 +13,60 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     app::{App, Focus, StatusKind},
-    model::{ChangeMode, ChangedFile, DiffRow, DiffRowKind, FileStatus, HunkKind},
+    model::{ChangeMode, ChangedFile, DiffLayout, DiffRow, DiffRowKind, FileStatus, HunkKind},
 };
 
 const ACTIVE_BORDER: Color = Color::Cyan;
 const INACTIVE_BORDER: Color = Color::DarkGray;
+const COMPACT_LAYOUT_THRESHOLD: u16 = 120;
 const SELECTED: Style = Style::new()
     .fg(Color::Black)
     .bg(Color::Cyan)
     .add_modifier(Modifier::BOLD);
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    app.apply_initial_layout(frame.area().width, COMPACT_LAYOUT_THRESHOLD);
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    let [worktrees, files, diff] = Layout::horizontal([
-        Constraint::Percentage(18),
-        Constraint::Percentage(22),
-        Constraint::Percentage(60),
-    ])
-    .areas(body);
-
     render_header(frame, app, header);
-    render_worktrees(frame, app, worktrees);
-    render_files(frame, app, files);
-    render_diff(frame, app, diff);
+    let [worktrees, files, diff] = panel_areas(body, app.focus, app.expanded);
+    if app.expanded && app.focus != Focus::Worktrees {
+        render_compact_panel(
+            frame,
+            worktrees,
+            "W",
+            app.worktrees.len(),
+            app.worktree_state.selected(),
+        );
+    } else {
+        render_worktrees(frame, app, worktrees);
+    }
+    if app.expanded && app.focus != Focus::Files {
+        render_compact_panel(
+            frame,
+            files,
+            "F",
+            app.files.len(),
+            app.selected_file_index(),
+        );
+    } else {
+        render_files(frame, app, files);
+    }
+    if app.expanded && app.focus != Focus::Diff {
+        render_compact_panel(
+            frame,
+            diff,
+            "D",
+            app.selected_file().map_or(0, |file| file.hunks.len()),
+            app.selected_hunk_index(),
+        );
+    } else {
+        render_diff(frame, app, diff);
+    }
     render_footer(frame, app, footer);
 
     if app.show_help {
@@ -49,6 +75,53 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if let Some(confirmation) = &app.delete_confirmation {
         render_delete_confirmation(frame, confirmation);
     }
+}
+
+fn panel_areas(area: Rect, focus: Focus, expanded: bool) -> [Rect; 3] {
+    let constraints = if expanded {
+        match focus {
+            Focus::Worktrees => [
+                Constraint::Fill(1),
+                Constraint::Length(5),
+                Constraint::Length(5),
+            ],
+            Focus::Files => [
+                Constraint::Length(5),
+                Constraint::Fill(1),
+                Constraint::Length(5),
+            ],
+            Focus::Diff => [
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Fill(1),
+            ],
+        }
+    } else {
+        [
+            Constraint::Percentage(18),
+            Constraint::Percentage(22),
+            Constraint::Percentage(60),
+        ]
+    };
+    Layout::horizontal(constraints).areas(area)
+}
+
+fn render_compact_panel(
+    frame: &mut Frame,
+    area: Rect,
+    title: &'static str,
+    item_count: usize,
+    selected: Option<usize>,
+) {
+    let items = (0..item_count).map(|index| {
+        let line = if Some(index) == selected {
+            Line::styled("›●", SELECTED)
+        } else {
+            Line::styled(" ●", Style::new().fg(Color::DarkGray))
+        };
+        ListItem::new(line)
+    });
+    frame.render_widget(List::new(items).block(pane_block(title, false)), area);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -173,16 +246,18 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         .selected_file()
         .map(|file| {
             format!(
-                "Diff [{}{}] - {}",
+                "Diff [{}, {}{}] - {}",
                 app.diff_view.label(),
+                app.diff_layout.label(),
                 if app.line_wrap { ", WRAP" } else { "" },
                 file.path.display()
             )
         })
         .unwrap_or_else(|| {
             format!(
-                "Diff [{}{}]",
+                "Diff [{}, {}{}]",
                 app.diff_view.label(),
+                app.diff_layout.label(),
                 if app.line_wrap { ", WRAP" } else { "" }
             )
         });
@@ -226,14 +301,28 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rows = diff_rows(file, app.mode, app.line_wrap, diff_content_width(area));
-    let widths = [
-        Constraint::Length(5),
-        Constraint::Percentage(50),
-        Constraint::Length(5),
-        Constraint::Percentage(50),
-    ];
-    let header = Row::new(["Old", "Before", "New", "After"])
+    let rows = diff_rows(file, app.mode, app.diff_layout, app.line_wrap, area);
+    let (widths, header) = match app.diff_layout {
+        DiffLayout::Split => (
+            vec![
+                Constraint::Length(5),
+                Constraint::Percentage(50),
+                Constraint::Length(5),
+                Constraint::Percentage(50),
+            ],
+            Row::new(["Old", "Before", "New", "After"]),
+        ),
+        DiffLayout::Unified => (
+            vec![
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Fill(1),
+                Constraint::Length(0),
+            ],
+            Row::new(["Old", "New", "Change", ""]),
+        ),
+    };
+    let header = header
         .style(Style::new().fg(Color::Gray).bold())
         .bottom_margin(1);
     let table = Table::new(rows, widths)
@@ -248,8 +337,9 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 fn diff_rows(
     file: &ChangedFile,
     mode: ChangeMode,
+    layout: DiffLayout,
     line_wrap: bool,
-    content_width: usize,
+    area: Rect,
 ) -> Vec<Row<'static>> {
     let mut rendered = Vec::new();
     for hunk in &file.hunks {
@@ -272,7 +362,7 @@ fn diff_rows(
             rendered.extend(
                 hunk.rows
                     .iter()
-                    .map(|row| render_diff_row(row, mode, hunk.kind, line_wrap, content_width)),
+                    .map(|row| render_diff_row(row, mode, hunk.kind, layout, line_wrap, area)),
             );
         }
     }
@@ -283,49 +373,202 @@ fn render_diff_row(
     row: &DiffRow,
     mode: ChangeMode,
     hunk_kind: HunkKind,
+    layout: DiffLayout,
+    line_wrap: bool,
+    area: Rect,
+) -> Row<'static> {
+    let content_width = diff_content_width(area, layout);
+    let (old_style, new_style) = diff_styles(row.kind, mode, hunk_kind);
+    match layout {
+        DiffLayout::Split => {
+            let old_text = display_text(row.old_text.as_deref(), line_wrap, content_width);
+            let new_text = display_text(row.new_text.as_deref(), line_wrap, content_width);
+            let height = old_text
+                .lines()
+                .count()
+                .max(new_text.lines().count())
+                .max(1) as u16;
+            Row::new([
+                Cell::from(line_number(row.old_number)).style(old_style),
+                Cell::from(old_text).style(old_style),
+                Cell::from(line_number(row.new_number)).style(new_style),
+                Cell::from(new_text).style(new_style),
+            ])
+            .height(height)
+        }
+        DiffLayout::Unified => {
+            render_unified_diff_row(row, old_style, new_style, line_wrap, content_width)
+        }
+    }
+}
+
+fn render_unified_diff_row(
+    row: &DiffRow,
+    old_style: Style,
+    new_style: Style,
     line_wrap: bool,
     content_width: usize,
 ) -> Row<'static> {
-    let (old_style, new_style) = diff_styles(row.kind, mode, hunk_kind);
-    let old_text = display_text(row.old_text.as_deref(), line_wrap, content_width);
-    let new_text = display_text(row.new_text.as_deref(), line_wrap, content_width);
-    let height = old_text
-        .lines()
-        .count()
-        .max(new_text.lines().count())
-        .max(1) as u16;
+    match row.kind {
+        DiffRowKind::Context => unified_row(
+            row.old_number,
+            row.new_number,
+            " ",
+            row.new_text.as_deref().or(row.old_text.as_deref()),
+            old_style,
+            line_wrap,
+            content_width,
+        ),
+        DiffRowKind::Deleted => unified_row(
+            row.old_number,
+            None,
+            "-",
+            row.old_text.as_deref(),
+            old_style,
+            line_wrap,
+            content_width,
+        ),
+        DiffRowKind::Added => unified_row(
+            None,
+            row.new_number,
+            "+",
+            row.new_text.as_deref(),
+            new_style,
+            line_wrap,
+            content_width,
+        ),
+        DiffRowKind::Modified => {
+            unified_modified_row(row, old_style, new_style, line_wrap, content_width)
+        }
+    }
+}
+
+fn unified_row(
+    old_number: Option<usize>,
+    new_number: Option<usize>,
+    prefix: &'static str,
+    text: Option<&str>,
+    style: Style,
+    line_wrap: bool,
+    content_width: usize,
+) -> Row<'static> {
+    let text = display_text(text, line_wrap, content_width.saturating_sub(2).max(1));
+    let height = text.split('\n').count() as u16;
     Row::new([
-        Cell::from(line_number(row.old_number)).style(old_style),
-        Cell::from(old_text).style(old_style),
-        Cell::from(line_number(row.new_number)).style(new_style),
-        Cell::from(new_text).style(new_style),
+        Cell::from(line_number(old_number)).style(style),
+        Cell::from(line_number(new_number)).style(style),
+        Cell::from(Text::from(prefixed_lines(prefix, &text, style))),
+        Cell::from(""),
     ])
     .height(height)
 }
 
-fn diff_content_width(area: Rect) -> usize {
+fn unified_modified_row(
+    row: &DiffRow,
+    old_style: Style,
+    new_style: Style,
+    line_wrap: bool,
+    content_width: usize,
+) -> Row<'static> {
+    let old_text = display_text(
+        row.old_text.as_deref(),
+        line_wrap,
+        content_width.saturating_sub(2).max(1),
+    );
+    let new_text = display_text(
+        row.new_text.as_deref(),
+        line_wrap,
+        content_width.saturating_sub(2).max(1),
+    );
+    let old_height = old_text.split('\n').count();
+    let new_height = new_text.split('\n').count();
+    let code_lines = unified_modified_lines(&old_text, &new_text, old_style, new_style);
+
+    Row::new([
+        Cell::from(number_lines(
+            row.old_number,
+            0,
+            old_height,
+            new_height,
+            old_style,
+        )),
+        Cell::from(number_lines(
+            row.new_number,
+            old_height,
+            new_height,
+            0,
+            new_style,
+        )),
+        Cell::from(Text::from(code_lines)),
+        Cell::from(""),
+    ])
+    .height((old_height + new_height) as u16)
+}
+
+fn unified_modified_lines(
+    old_text: &str,
+    new_text: &str,
+    old_style: Style,
+    new_style: Style,
+) -> Vec<Line<'static>> {
+    let mut lines = prefixed_lines("-", old_text, old_style);
+    lines.extend(prefixed_lines("+", new_text, new_style));
+    lines
+}
+
+fn prefixed_lines(prefix: &'static str, text: &str, style: Style) -> Vec<Line<'static>> {
+    text.split('\n')
+        .enumerate()
+        .map(|(index, line)| {
+            Line::styled(
+                format!("{} {line}", if index == 0 { prefix } else { " " }),
+                style,
+            )
+        })
+        .collect()
+}
+
+fn number_lines(
+    number: Option<usize>,
+    leading_blanks: usize,
+    own_height: usize,
+    trailing_blanks: usize,
+    style: Style,
+) -> Text<'static> {
+    let mut lines = if leading_blanks > 0 {
+        vec![Line::raw(""); leading_blanks]
+    } else {
+        Vec::new()
+    };
+    lines.push(Line::styled(line_number(number), style));
+    lines.extend((1..own_height).map(|_| Line::raw("")));
+    lines.extend((0..trailing_blanks).map(|_| Line::raw("")));
+    Text::from(lines)
+}
+
+fn diff_content_width(area: Rect, layout: DiffLayout) -> usize {
     const BORDER_WIDTH: u16 = 2;
-    const LINE_NUMBER_WIDTHS: u16 = 10;
     const COLUMN_SPACING: u16 = 3;
     const HIGHLIGHT_SYMBOL_WIDTH: u16 = 1;
-
-    usize::from(
-        area.width.saturating_sub(
-            BORDER_WIDTH + LINE_NUMBER_WIDTHS + COLUMN_SPACING + HIGHLIGHT_SYMBOL_WIDTH,
-        ) / 2,
-    )
-    .max(1)
+    let available = area
+        .width
+        .saturating_sub(BORDER_WIDTH + 10 + COLUMN_SPACING + HIGHLIGHT_SYMBOL_WIDTH);
+    match layout {
+        DiffLayout::Split => usize::from(available / 2).max(1),
+        DiffLayout::Unified => usize::from(available).max(1),
+    }
 }
 
 fn display_text(text: Option<&str>, line_wrap: bool, width: usize) -> String {
     let text = text.unwrap_or_default();
-    if !line_wrap || UnicodeWidthStr::width(text) <= width {
-        return text.to_string();
+    let expanded = expand_tabs(text, 4);
+    if !line_wrap || UnicodeWidthStr::width(expanded.as_str()) <= width {
+        return expanded;
     }
 
     let mut wrapped = String::new();
     let mut current_width = 0;
-    for character in text.chars() {
+    for character in expanded.chars() {
         let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
         if current_width > 0 && current_width + character_width > width {
             wrapped.push('\n');
@@ -335,6 +578,22 @@ fn display_text(text: Option<&str>, line_wrap: bool, width: usize) -> String {
         current_width += character_width;
     }
     wrapped
+}
+
+fn expand_tabs(text: &str, tab_width: usize) -> String {
+    let mut expanded = String::with_capacity(text.len());
+    let mut column = 0;
+    for character in text.chars() {
+        if character == '\t' {
+            let spaces = tab_width - column % tab_width;
+            expanded.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            expanded.push(character);
+            column += UnicodeWidthChar::width(character).unwrap_or(0);
+        }
+    }
+    expanded
 }
 
 fn diff_styles(kind: DiffRowKind, mode: ChangeMode, hunk_kind: HunkKind) -> (Style, Style) {
@@ -369,7 +628,7 @@ fn hunk_badge_style(kind: HunkKind) -> Style {
 fn file_style(file: &ChangedFile, mode: ChangeMode) -> Style {
     if mode == ChangeMode::Branch {
         match (file.additions > 0, file.deletions > 0) {
-            (true, true) => Style::new().fg(Color::Blue),
+            (true, true) => Style::new().fg(Color::Rgb(255, 165, 0)),
             (true, false) => Style::new().fg(Color::Green),
             (false, true) => Style::new().fg(Color::Red),
             (false, false) => Style::new().fg(Color::Gray),
@@ -421,12 +680,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let line = if let Some(status) = &app.status {
         status_line(status.kind, &status.text)
     } else {
-        navigation_line(app.focus)
+        navigation_line(app.focus, app.expanded)
     };
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn navigation_line(focus: Focus) -> Line<'static> {
+fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
     let mut spans = vec![
         Span::styled("←/→", Style::new().fg(Color::Cyan)),
         Span::raw(" panes  "),
@@ -434,15 +693,19 @@ fn navigation_line(focus: Focus) -> Line<'static> {
         Span::raw(" navigate  "),
         Span::styled("Tab", Style::new().fg(Color::Cyan)),
         Span::raw(" mode  "),
-        Span::styled("Enter", Style::new().fg(Color::Cyan)),
-        Span::raw(" fold  "),
+        Span::styled("Space", Style::new().fg(Color::Cyan)),
+        Span::raw(if expanded { " minimize  " } else { " expand  " }),
         Span::styled("r", Style::new().fg(Color::Cyan)),
         Span::raw(" refresh  "),
     ];
     if focus == Focus::Diff {
         spans.extend([
+            Span::styled("Enter", Style::new().fg(Color::Cyan)),
+            Span::raw(" fold  "),
             Span::styled("v", Style::new().fg(Color::Cyan)),
             Span::raw(" view  "),
+            Span::styled("s", Style::new().fg(Color::Cyan)),
+            Span::raw(" split/unified  "),
             Span::styled("w", Style::new().fg(Color::Cyan)),
             Span::raw(" wrap  "),
         ]);
@@ -489,7 +752,9 @@ fn render_help(frame: &mut Frame) {
         help_line("Home / End", "Jump to the start or end of the diff"),
         help_line("Enter", "Collapse or expand the current hunk"),
         help_line("Tab", "Switch change mode"),
+        help_line("Space", "Expand or restore the focused panel"),
         help_line("v", "Toggle hunks or full-file diff"),
+        help_line("s", "Toggle split or unified diff layout"),
         help_line("w", "Toggle wrapping of long diff lines"),
         help_line("r", "Refresh worktrees and changes"),
         help_line("d", "Clean up the selected worktree"),
@@ -580,7 +845,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, widgets::ListState};
 
     use super::*;
-    use crate::model::{DiffHunk, DiffView, HunkKind, Worktree};
+    use crate::model::{DiffHunk, DiffLayout, DiffView, HunkKind, Worktree};
 
     #[test]
     fn branch_file_colors_follow_change_shape() {
@@ -588,7 +853,10 @@ mod tests {
         file.additions = 1;
         assert_eq!(file_style(&file, ChangeMode::Branch).fg, Some(Color::Green));
         file.deletions = 1;
-        assert_eq!(file_style(&file, ChangeMode::Branch).fg, Some(Color::Blue));
+        assert_eq!(
+            file_style(&file, ChangeMode::Branch).fg,
+            Some(Color::Rgb(255, 165, 0))
+        );
         file.additions = 0;
         assert_eq!(file_style(&file, ChangeMode::Branch).fg, Some(Color::Red));
     }
@@ -613,21 +881,41 @@ mod tests {
 
     #[test]
     fn cleanup_shortcut_is_only_shown_for_worktree_focus() {
-        let worktree_footer = line_text(&navigation_line(Focus::Worktrees));
-        let files_footer = line_text(&navigation_line(Focus::Files));
-        let diff_footer = line_text(&navigation_line(Focus::Diff));
+        let worktree_footer = line_text(&navigation_line(Focus::Worktrees, false));
+        let files_footer = line_text(&navigation_line(Focus::Files, false));
+        let diff_footer = line_text(&navigation_line(Focus::Diff, false));
 
         assert!(worktree_footer.contains("d clean worktree"));
         assert!(!files_footer.contains("d clean worktree"));
         assert!(!diff_footer.contains("d clean worktree"));
         assert!(!worktree_footer.contains("v view"));
+        assert!(!worktree_footer.contains("s split/unified"));
         assert!(!worktree_footer.contains("w wrap"));
+        assert!(!worktree_footer.contains("Enter fold"));
         assert!(!files_footer.contains("v view"));
+        assert!(!files_footer.contains("s split/unified"));
         assert!(!files_footer.contains("w wrap"));
+        assert!(!files_footer.contains("Enter fold"));
         assert!(diff_footer.contains("v view"));
+        assert!(diff_footer.contains("s split/unified"));
         assert!(diff_footer.contains("w wrap"));
+        assert!(diff_footer.contains("Enter fold"));
         assert!(!diff_footer.contains("wrap:on"));
         assert!(!diff_footer.contains("wrap:off"));
+    }
+
+    #[test]
+    fn expansion_shortcut_describes_the_next_action() {
+        assert!(
+            navigation_line(Focus::Diff, false)
+                .to_string()
+                .contains("Space expand")
+        );
+        assert!(
+            navigation_line(Focus::Diff, true)
+                .to_string()
+                .contains("Space minimize")
+        );
     }
 
     #[test]
@@ -635,6 +923,42 @@ mod tests {
         assert_eq!(display_text(Some("abcdefghij"), true, 4), "abcd\nefgh\nij");
         assert_eq!(display_text(Some("abcdefghij"), false, 4), "abcdefghij");
         assert_eq!(display_text(Some("ab界cd"), true, 4), "ab界\ncd");
+    }
+
+    #[test]
+    fn unified_modified_rows_stack_deleted_before_added() {
+        let lines = unified_modified_lines(
+            "before",
+            "after",
+            Style::new().fg(Color::Red),
+            Style::new().fg(Color::Green),
+        );
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].to_string(), "- before");
+        assert_eq!(lines[1].to_string(), "+ after");
+        assert_eq!(lines[0].style.fg, Some(Color::Red));
+        assert_eq!(lines[1].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn unified_content_uses_the_available_width() {
+        let area = Rect::new(0, 0, 100, 20);
+        assert!(
+            diff_content_width(area, DiffLayout::Unified)
+                > diff_content_width(area, DiffLayout::Split)
+        );
+    }
+
+    #[test]
+    fn expands_tabs_to_four_column_stops() {
+        assert_eq!(display_text(Some("\tvalue"), false, 80), "    value");
+        assert_eq!(display_text(Some("ab\tvalue"), false, 80), "ab  value");
+        assert_eq!(
+            display_text(Some("abcd\tvalue"), false, 80),
+            "abcd    value"
+        );
+        assert_eq!(display_text(Some("\tabcdef"), true, 6), "    ab\ncdef");
     }
 
     fn line_text(line: &Line<'_>) -> String {
@@ -672,7 +996,10 @@ mod tests {
             base: "main".into(),
             mode: ChangeMode::Uncommitted,
             diff_view: DiffView::Hunks,
+            diff_layout: DiffLayout::Split,
             line_wrap: false,
+            expanded: false,
+            initial_layout_applied: true,
             focus: Focus::Worktrees,
             worktrees: vec![
                 Worktree {

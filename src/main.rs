@@ -3,14 +3,18 @@ mod cli;
 mod git;
 mod model;
 mod ui;
+mod watcher;
 
-use std::{io::IsTerminal, time::Duration};
+use std::{
+    io::IsTerminal,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
-use crate::{app::App, cli::Cli};
+use crate::{app::App, cli::Cli, watcher::AutoRefresh};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -27,15 +31,36 @@ fn main() -> Result<()> {
     }
 
     let mut app = App::load(directory, cli.base)?;
+    let mut auto_refresh = AutoRefresh::new(
+        &app.directory,
+        app.selected_worktree()
+            .map(|worktree| worktree.path.as_path()),
+    );
     ratatui::run(|terminal| {
         loop {
+            let now = Instant::now();
+            if auto_refresh.should_refresh(now) && !app.modal_open() {
+                app.refresh();
+                auto_refresh.mark_refreshed(now);
+                auto_refresh.watch_worktree(
+                    app.selected_worktree()
+                        .map(|worktree| worktree.path.as_path()),
+                    now,
+                );
+            }
             terminal.draw(|frame| ui::render(frame, &mut app))?;
-            if event::poll(Duration::from_millis(250))?
+            if event::poll(Duration::from_millis(100))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && app.handle_key(key)
             {
-                return Ok::<(), std::io::Error>(());
+                if app.handle_key(key) {
+                    return Ok::<(), std::io::Error>(());
+                }
+                auto_refresh.watch_worktree(
+                    app.selected_worktree()
+                        .map(|worktree| worktree.path.as_path()),
+                    Instant::now(),
+                );
             }
         }
     })
