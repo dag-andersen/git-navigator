@@ -41,8 +41,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame,
             worktrees,
             "W",
-            app.worktrees.len(),
-            app.worktree_state.selected(),
+            app.visible_worktree_indices().len(),
+            app.worktree_state.selected().and_then(|selected| {
+                app.visible_worktree_indices()
+                    .iter()
+                    .position(|index| *index == selected)
+            }),
         );
     } else {
         render_worktrees(frame, app, worktrees);
@@ -52,8 +56,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame,
             files,
             "F",
-            app.files.len(),
-            app.selected_file_index(),
+            app.visible_file_rows().len(),
+            app.file_state.selected().and_then(|selected| {
+                app.visible_file_rows()
+                    .iter()
+                    .position(|index| *index == selected)
+            }),
         );
     } else {
         render_files(frame, app, files);
@@ -180,10 +188,15 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .worktrees
+    let visible = app.visible_worktree_indices();
+    let selected = app
+        .worktree_state
+        .selected()
+        .and_then(|selected| visible.iter().position(|index| *index == selected));
+    let items: Vec<ListItem> = visible
         .iter()
-        .map(|worktree| {
+        .map(|index| {
+            let worktree = &app.worktrees[*index];
             let marker = if worktree.is_current { "●" } else { " " };
             let dirty = if worktree.dirty { "*" } else { "" };
             let state = if worktree.is_missing() {
@@ -224,17 +237,29 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_symbol("› ");
     let viewport_length =
         (usize::from(area.height.saturating_sub(2)) / WORKTREE_ITEM_HEIGHT).max(1);
-    let has_overflow = app.worktrees.len() > viewport_length;
+    let has_overflow = visible.len() > viewport_length;
+    let mut list_state = ratatui::widgets::ListState::default();
+    list_state.select(selected);
     if !has_overflow {
         frame.render_stateful_widget(
-            list.block(pane_block("Worktrees", app.focus == Focus::Worktrees)),
+            list.block(pane_block(
+                &worktree_title(app, visible.len()),
+                app.focus == Focus::Worktrees,
+            )),
             area,
-            &mut app.worktree_state,
+            &mut list_state,
         );
+        *app.worktree_state.offset_mut() = list_state.offset();
         return;
     }
 
-    frame.render_widget(pane_block("Worktrees", app.focus == Focus::Worktrees), area);
+    frame.render_widget(
+        pane_block(
+            &worktree_title(app, visible.len()),
+            app.focus == Focus::Worktrees,
+        ),
+        area,
+    );
     let content_area = area.inner(Margin {
         vertical: 1,
         horizontal: 1,
@@ -243,7 +268,8 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         width: content_area.width.saturating_sub(1),
         ..content_area
     };
-    frame.render_stateful_widget(list, list_area, &mut app.worktree_state);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+    *app.worktree_state.offset_mut() = list_state.offset();
 
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(Some("▲"))
@@ -255,11 +281,11 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             INACTIVE_BORDER
         }));
-    let mut scrollbar_state = ScrollbarState::new(app.worktrees.len())
+    let mut scrollbar_state = ScrollbarState::new(visible.len())
         .viewport_content_length(viewport_length)
         .position(scrollbar_position(
             app.worktree_state.offset(),
-            app.worktrees.len(),
+            visible.len(),
             viewport_length,
         ));
     frame.render_stateful_widget(scrollbar, content_area, &mut scrollbar_state);
@@ -276,23 +302,28 @@ fn scrollbar_position(offset: usize, content_length: usize, viewport_length: usi
 }
 
 fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .file_tree
+    let visible = app.visible_file_rows();
+    let selected = app
+        .file_state
+        .selected()
+        .and_then(|selected| visible.iter().position(|index| *index == selected));
+    let items: Vec<ListItem> = visible
         .iter()
-        .map(|tree_row| {
+        .map(|index| {
+            let tree_row = &app.file_tree[*index];
             let Some(file) = tree_row
                 .file_index
                 .and_then(|file_index| app.files.get(file_index))
             else {
                 return ListItem::new(Line::styled(
-                    tree_row.label.clone(),
+                    app.file_tree_label(*index, &visible),
                     Style::new().fg(Color::Cyan).bold(),
                 ));
             };
 
             let style = file_style(file, app.mode);
             ListItem::new(Line::from(vec![
-                Span::styled(tree_row.label.clone(), style),
+                Span::styled(app.file_tree_label(*index, &visible), style),
                 Span::styled(
                     format!(
                         "  {} +{} -{}",
@@ -305,12 +336,15 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
             ]))
         })
         .collect();
-    let title = format!("Files ({})", app.files.len());
+    let title = file_title(app, visible.len());
     let list = List::new(items)
         .block(pane_block(&title, app.focus == Focus::Files))
         .highlight_style(SELECTED)
         .highlight_symbol("› ");
-    frame.render_stateful_widget(list, area, &mut app.file_state);
+    let mut list_state = ratatui::widgets::ListState::default();
+    list_state.select(selected);
+    frame.render_stateful_widget(list, area, &mut list_state);
+    *app.file_state.offset_mut() = list_state.offset();
 }
 
 fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -761,13 +795,60 @@ fn pane_block<'a>(title: &'a str, active: bool) -> Block<'a> {
         .title(format!(" {title} "))
 }
 
+fn worktree_title(app: &App, visible_count: usize) -> String {
+    let count = if app.worktree_filter.is_empty() {
+        visible_count.to_string()
+    } else {
+        format!("{visible_count}/{}", app.worktrees.len())
+    };
+    panel_title(&format!("Worktrees ({count})"), &app.worktree_filter)
+}
+
+fn file_title(app: &App, visible_count: usize) -> String {
+    let count = if app.file_filter.is_empty() {
+        app.files.len().to_string()
+    } else {
+        format!("{visible_count}/{}", app.files.len())
+    };
+    panel_title(&format!("Files ({count})"), &app.file_filter)
+}
+
+fn panel_title(title: &str, filter: &str) -> String {
+    if filter.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} /{filter}/")
+    }
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let line = if let Some(status) = &app.status {
+    let line = if let Some(search) = &app.search {
+        search_line(search.focus, &search.query)
+    } else if let Some(status) = &app.status {
         status_line(status.kind, &status.text)
     } else {
         navigation_line(app.focus, app.expanded)
     };
     frame.render_widget(Paragraph::new(line), area);
+}
+
+fn search_line(focus: Focus, query: &str) -> Line<'static> {
+    let panel = match focus {
+        Focus::Worktrees => "worktrees",
+        Focus::Files => "files",
+        Focus::Diff => "diff",
+    };
+    Line::from(vec![
+        Span::styled(
+            format!(" Search {panel}: "),
+            Style::new().fg(Color::Cyan).bold(),
+        ),
+        Span::styled(format!("/{query}"), Style::new().fg(Color::White).bold()),
+        Span::styled(
+            "  Enter apply  Esc cancel",
+            Style::new().fg(Color::DarkGray),
+        ),
+    ])
 }
 
 fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
@@ -795,6 +876,8 @@ fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
             Span::raw(" split/unified  "),
             Span::styled("w", Style::new().fg(Color::Cyan)),
             Span::raw(" wrap  "),
+            Span::styled("c", Style::new().fg(Color::Cyan)),
+            Span::raw(" copy location  "),
         ]);
     }
     if focus == Focus::Worktrees {
@@ -841,9 +924,11 @@ fn render_help(frame: &mut Frame) {
         help_line("Tab", "Switch change mode"),
         help_line("Space", "Expand or restore the focused panel"),
         help_line("t", "Cycle panel layout"),
+        help_line("/", "Search worktrees or files"),
         help_line("v", "Toggle hunks or full-file diff"),
         help_line("s", "Toggle split or unified diff layout"),
         help_line("w", "Toggle wrapping of long diff lines"),
+        help_line("c", "Copy selected file path and line"),
         help_line("r", "Refresh worktrees and changes"),
         help_line("d", "Clean up the selected worktree"),
         help_line("? / Esc", "Close this help"),
@@ -1004,6 +1089,15 @@ mod tests {
                 .to_string()
                 .contains("Space minimize")
         );
+    }
+
+    #[test]
+    fn searchable_panel_titles_include_the_active_filter() {
+        assert_eq!(
+            panel_title("Files (4/4)", "some-search-word"),
+            "Files (4/4) /some-search-word/"
+        );
+        assert_eq!(panel_title("Files (4)", ""), "Files (4)");
     }
 
     #[test]
@@ -1182,6 +1276,7 @@ mod tests {
             files: vec![file],
             file_tree: vec![crate::model::FileTreeRow {
                 label: "└── src/main.rs".into(),
+                path: std::path::PathBuf::from("src/main.rs"),
                 file_index: Some(0),
             }],
             worktree_state,
@@ -1190,6 +1285,9 @@ mod tests {
             show_help: false,
             delete_confirmation: None,
             status: None,
+            worktree_filter: String::new(),
+            file_filter: String::new(),
+            search: None,
         };
         app.worktrees.extend((1..=3).map(|index| Worktree {
             path: PathBuf::from(format!("/demo-worktree-{index}")),

@@ -105,6 +105,7 @@ pub struct ChangedFile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileTreeRow {
     pub label: String,
+    pub path: PathBuf,
     pub file_index: Option<usize>,
 }
 

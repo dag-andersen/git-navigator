@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use arboard::Clipboard;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
     widgets::{ListState, TableState},
@@ -60,6 +61,12 @@ pub struct StatusMessage {
     pub text: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchState {
+    pub focus: Focus,
+    pub query: String,
+}
+
 impl Focus {
     fn left(self) -> Self {
         match self {
@@ -98,6 +105,9 @@ pub struct App {
     pub show_help: bool,
     pub delete_confirmation: Option<DeleteConfirmation>,
     pub status: Option<StatusMessage>,
+    pub worktree_filter: String,
+    pub file_filter: String,
+    pub search: Option<SearchState>,
 }
 
 impl App {
@@ -148,6 +158,9 @@ impl App {
             show_help: false,
             delete_confirmation: None,
             status: None,
+            worktree_filter: String::new(),
+            file_filter: String::new(),
+            search: None,
         })
     }
 
@@ -173,8 +186,14 @@ impl App {
             return false;
         }
 
+        if self.search.is_some() {
+            self.handle_search_key(key);
+            return false;
+        }
+
         match key.code {
             KeyCode::Char('q') => return true,
+            KeyCode::Esc if self.focus != Focus::Diff => self.clear_filter(self.focus),
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('d') if self.focus == Focus::Worktrees => self.request_worktree_removal(),
@@ -183,7 +202,11 @@ impl App {
             KeyCode::Char('s') => self.diff_layout = self.diff_layout.toggle(),
             KeyCode::Char('w') => self.line_wrap = !self.line_wrap,
             KeyCode::Char(' ') => self.expanded = !self.expanded,
-            KeyCode::Char('t') => self.panel_layout = self.panel_layout.toggle(),
+            KeyCode::Char('t') => {
+                self.panel_layout = self.panel_layout.toggle();
+                self.expanded = false;
+            }
+            KeyCode::Char('/') if self.focus != Focus::Diff => self.begin_search(),
             KeyCode::Left | KeyCode::Char('h') => self.focus = self.focus.left(),
             KeyCode::Right | KeyCode::Char('l') => self.focus = self.focus.right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
@@ -198,6 +221,7 @@ impl App {
                 }
             }
             KeyCode::Enter if self.focus == Focus::Diff => self.toggle_selected_hunk(),
+            KeyCode::Char('c') if self.focus == Focus::Diff => self.copy_selected_location(),
             _ => {}
         }
         false
@@ -220,6 +244,45 @@ impl App {
         self.worktree_state
             .selected()
             .and_then(|index| self.worktrees.get(index))
+    }
+
+    pub fn search_query(&self, focus: Focus) -> &str {
+        match focus {
+            Focus::Worktrees => &self.worktree_filter,
+            Focus::Files => &self.file_filter,
+            Focus::Diff => "",
+        }
+    }
+
+    pub fn visible_worktree_indices(&self) -> Vec<usize> {
+        self.worktrees
+            .iter()
+            .enumerate()
+            .filter(|(_, worktree)| {
+                fuzzy_match(
+                    self.search_query(Focus::Worktrees),
+                    &format!(
+                        "{} {} {}",
+                        worktree.path.display(),
+                        worktree.branch,
+                        worktree.head
+                    ),
+                )
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn visible_file_rows(&self) -> Vec<usize> {
+        filtered_file_tree(
+            &self.file_tree,
+            &self.files,
+            self.search_query(Focus::Files),
+        )
+    }
+
+    pub fn file_tree_label(&self, row_index: usize, visible_rows: &[usize]) -> String {
+        file_tree_label(&self.file_tree, row_index, visible_rows)
     }
 
     pub fn selected_file(&self) -> Option<&ChangedFile> {
@@ -275,16 +338,30 @@ impl App {
     }
 
     fn move_worktree(&mut self, delta: isize) {
-        let next = moved_selection(self.worktree_state.selected(), self.worktrees.len(), delta);
-        if next == self.worktree_state.selected() {
+        let visible = self.visible_worktree_indices();
+        let current = self
+            .worktree_state
+            .selected()
+            .and_then(|selected| visible.iter().position(|index| *index == selected));
+        let Some(next_position) = moved_selection(current, visible.len(), delta) else {
+            return;
+        };
+        let next = visible[next_position];
+        if Some(next) == self.worktree_state.selected() {
             return;
         }
-        self.worktree_state.select(next);
+        self.worktree_state.select(Some(next));
         self.reload_files(None);
     }
 
     fn move_file(&mut self, delta: isize) {
-        let next = moved_file_selection(self.file_state.selected(), &self.file_tree, delta);
+        let visible = self.visible_file_rows();
+        let next = moved_visible_file_selection(
+            self.file_state.selected(),
+            &visible,
+            &self.file_tree,
+            delta,
+        );
         if next == self.file_state.selected() {
             return;
         }
@@ -548,6 +625,124 @@ impl App {
             text: message.into(),
         });
     }
+
+    fn begin_search(&mut self) {
+        self.search = Some(SearchState {
+            focus: self.focus,
+            query: self.search_query(self.focus).to_string(),
+        });
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let Some(search) = self.search.clone() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                let focus = search.focus;
+                self.set_filter(focus, String::new());
+                self.search = None;
+            }
+            KeyCode::Enter => self.search = None,
+            KeyCode::Left => self.switch_search_panel(false),
+            KeyCode::Right => self.switch_search_panel(true),
+            KeyCode::Backspace => {
+                let mut query = search.query;
+                query.pop();
+                self.search = Some(SearchState {
+                    focus: search.focus,
+                    query: query.clone(),
+                });
+                self.set_filter(search.focus, query);
+            }
+            KeyCode::Char(character) => {
+                let mut query = search.query;
+                query.push(character);
+                self.search = Some(SearchState {
+                    focus: search.focus,
+                    query: query.clone(),
+                });
+                self.set_filter(search.focus, query);
+            }
+            KeyCode::Up => self.move_up(),
+            KeyCode::Down => self.move_down(),
+            _ => {}
+        }
+    }
+
+    fn switch_search_panel(&mut self, right: bool) {
+        let Some(current_focus) = self.search.as_ref().map(|search| search.focus) else {
+            return;
+        };
+        let next_focus = match (current_focus, right) {
+            (Focus::Worktrees, true) => Focus::Files,
+            (Focus::Files, false) => Focus::Worktrees,
+            (focus, _) => focus,
+        };
+        let query = self.search_query(next_focus).to_string();
+        self.focus = next_focus;
+        self.set_filter(next_focus, query);
+        self.search = None;
+    }
+
+    fn set_filter(&mut self, focus: Focus, filter: String) {
+        match focus {
+            Focus::Worktrees => {
+                self.worktree_filter = filter;
+                let visible = self.visible_worktree_indices();
+                let selected = self
+                    .worktree_state
+                    .selected()
+                    .filter(|selected| visible.contains(selected))
+                    .or_else(|| visible.first().copied());
+                self.worktree_state.select(selected);
+                self.reload_files(None);
+            }
+            Focus::Files => {
+                self.file_filter = filter;
+                let visible = self.visible_file_rows();
+                let selected = self
+                    .file_state
+                    .selected()
+                    .filter(|selected| visible.contains(selected))
+                    .filter(|selected| self.file_tree[*selected].file_index.is_some())
+                    .or_else(|| first_file_row_in(&self.file_tree, &visible));
+                self.file_state.select(selected);
+                self.diff_state
+                    .select(first_diff_row(&self.files, &self.file_tree, selected));
+            }
+            Focus::Diff => {}
+        }
+    }
+
+    fn clear_filter(&mut self, focus: Focus) {
+        if !self.search_query(focus).is_empty() {
+            self.set_filter(focus, String::new());
+        }
+    }
+
+    fn copy_selected_location(&mut self) {
+        let Some(location) = self.selected_location() else {
+            self.set_error("No source line is selected");
+            return;
+        };
+        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(location.clone())) {
+            Ok(()) => self.set_info(format!("Copied {location}")),
+            Err(error) => self.set_error(format!("Could not copy {location}: {error}")),
+        }
+    }
+
+    fn selected_location(&self) -> Option<String> {
+        let file = self.selected_file()?;
+        let worktree = self.selected_worktree()?;
+        let selected_row = self.diff_state.selected()?;
+        let row = diff_row_at(file, selected_row)?;
+        let line = row.new_number.or(row.old_number)?;
+        Some(format!(
+            "{}:{line}",
+            worktree.path.join(&file.path).display()
+        ))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -587,28 +782,46 @@ fn first_file_row(tree: &[FileTreeRow]) -> Option<usize> {
     tree.iter().position(|row| !row.is_directory())
 }
 
-fn moved_file_selection(
+fn moved_visible_file_selection(
     selected: Option<usize>,
+    visible: &[usize],
     tree: &[FileTreeRow],
     delta: isize,
 ) -> Option<usize> {
-    if tree.is_empty() {
-        return None;
+    let file_positions: Vec<usize> = visible
+        .iter()
+        .enumerate()
+        .filter_map(|(position, row)| (!tree[*row].is_directory()).then_some(position))
+        .collect();
+    let current = selected
+        .and_then(|selected| {
+            file_positions
+                .iter()
+                .position(|position| visible[*position] == selected)
+        })
+        .or_else(|| (!file_positions.is_empty()).then_some(0));
+    let next = moved_selection(current, file_positions.len(), delta)?;
+    Some(visible[file_positions[next]])
+}
+
+fn first_file_row_in(tree: &[FileTreeRow], visible: &[usize]) -> Option<usize> {
+    visible
+        .iter()
+        .copied()
+        .find(|index| tree[*index].file_index.is_some())
+}
+
+fn fuzzy_match(query: &str, candidate: &str) -> bool {
+    if query.is_empty() {
+        return true;
     }
-    let current = selected.or_else(|| first_file_row(tree))?;
-    if delta < 0 {
-        tree[..current]
-            .iter()
-            .rposition(|row| !row.is_directory())
-            .or(Some(current))
-    } else if delta > 0 {
-        tree.get(current + 1..)
-            .and_then(|rows| rows.iter().position(|row| !row.is_directory()))
-            .map(|offset| current + 1 + offset)
-            .or(Some(current))
-    } else {
-        Some(current)
-    }
+    let mut candidate = candidate.chars().flat_map(char::to_lowercase);
+    query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|query_character| {
+            candidate.any(|candidate_character| candidate_character == query_character)
+        })
 }
 
 #[derive(Default)]
@@ -636,7 +849,7 @@ fn build_file_tree(files: &[ChangedFile]) -> Vec<FileTreeRow> {
     }
 
     let mut rows = Vec::new();
-    flatten_file_tree(&root, "", &mut rows);
+    flatten_file_tree(&root, Path::new(""), "", &mut rows);
     rows
 }
 
@@ -660,13 +873,20 @@ fn insert_file_node(directory: &mut FileTreeDirectory, components: &[OsString], 
     }
 }
 
-fn flatten_file_tree(directory: &FileTreeDirectory, prefix: &str, rows: &mut Vec<FileTreeRow>) {
+fn flatten_file_tree(
+    directory: &FileTreeDirectory,
+    path_prefix: &Path,
+    label_prefix: &str,
+    rows: &mut Vec<FileTreeRow>,
+) {
     let child_count = directory.children.len();
     for (position, (name, node)) in directory.children.iter().enumerate() {
         let is_last = position + 1 == child_count;
         let connector = if is_last { "└── " } else { "├── " };
+        let path = path_prefix.join(name);
         rows.push(FileTreeRow {
-            label: format!("{prefix}{connector}{}", name.to_string_lossy()),
+            label: format!("{label_prefix}{connector}{}", name.to_string_lossy()),
+            path: path.clone(),
             file_index: match node {
                 FileTreeNode::Directory(_) => None,
                 FileTreeNode::File(index) => Some(*index),
@@ -675,9 +895,81 @@ fn flatten_file_tree(directory: &FileTreeDirectory, prefix: &str, rows: &mut Vec
 
         if let FileTreeNode::Directory(child) = node {
             let continuation = if is_last { "    " } else { "│   " };
-            flatten_file_tree(child, &format!("{prefix}{continuation}"), rows);
+            flatten_file_tree(child, &path, &format!("{label_prefix}{continuation}"), rows);
         }
     }
+}
+
+fn filtered_file_tree(tree: &[FileTreeRow], files: &[ChangedFile], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..tree.len()).collect();
+    }
+
+    let matching_files: Vec<usize> = tree
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row.file_index.is_some_and(|file_index| {
+                files
+                    .get(file_index)
+                    .is_some_and(|file| fuzzy_match(query, &file.path.display().to_string()))
+            })
+        })
+        .map(|(row_index, _)| row_index)
+        .collect();
+
+    tree.iter()
+        .enumerate()
+        .filter(|(row_index, row)| {
+            row.file_index
+                .is_some_and(|_| matching_files.contains(row_index))
+                || row.file_index.is_none()
+                    && matching_files
+                        .iter()
+                        .any(|file_index| tree[*file_index].path.starts_with(&row.path))
+        })
+        .map(|(row_index, _)| row_index)
+        .collect()
+}
+
+fn file_tree_label(tree: &[FileTreeRow], row_index: usize, visible_rows: &[usize]) -> String {
+    let path = &tree[row_index].path;
+    let depth = path.components().count();
+    let mut label = String::new();
+    for ancestor_depth in 1..depth {
+        let ancestor =
+            path.components()
+                .take(ancestor_depth)
+                .fold(PathBuf::new(), |mut path, component| {
+                    path.push(component.as_os_str());
+                    path
+                });
+        let has_later_sibling = visible_rows.iter().any(|index| {
+            tree[*index].path.parent() == ancestor.parent()
+                && tree[*index].path != ancestor
+                && *index
+                    > tree
+                        .iter()
+                        .position(|row| row.path == ancestor)
+                        .unwrap_or(0)
+        });
+        label.push_str(if has_later_sibling { "│   " } else { "    " });
+    }
+    let has_later_sibling = visible_rows.iter().any(|index| {
+        *index > row_index
+            && tree[*index].path.parent() == path.parent()
+            && tree[*index].path != *path
+    });
+    label.push_str(if has_later_sibling {
+        "├── "
+    } else {
+        "└── "
+    });
+    label.push_str(&path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    ));
+    label
 }
 
 fn hunk_at_row(file: &ChangedFile, row: usize) -> Option<usize> {
@@ -688,6 +980,23 @@ fn hunk_at_row(file: &ChangedFile, row: usize) -> Option<usize> {
             return Some(index);
         }
         start += height;
+    }
+    None
+}
+
+fn diff_row_at(file: &ChangedFile, row: usize) -> Option<&crate::model::DiffRow> {
+    let mut current = 0;
+    for hunk in &file.hunks {
+        if current == row {
+            return hunk.rows.first();
+        }
+        current += 1;
+        if !hunk.collapsed {
+            if row < current + hunk.rows.len() {
+                return hunk.rows.get(row - current);
+            }
+            current += hunk.rows.len();
+        }
     }
     None
 }
@@ -719,7 +1028,7 @@ fn diff_row_for_position(file: &ChangedFile, position: &DiffPosition) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DiffHunk, HunkKind};
+    use crate::model::{DiffHunk, DiffRow, DiffRowKind, FileStatus, HunkKind};
     use ratatui::crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
 
     #[test]
@@ -728,6 +1037,254 @@ mod tests {
         assert_eq!(moved_selection(Some(0), 3, 1), Some(1));
         assert_eq!(moved_selection(Some(2), 3, 1), Some(2));
         assert_eq!(moved_selection(None, 0, 1), None);
+    }
+
+    #[test]
+    fn fuzzy_matching_is_case_insensitive_subsequence_matching() {
+        assert!(fuzzy_match("gm", "git-navigator-demo"));
+        assert!(fuzzy_match("NAV", "git-navigator-demo"));
+        assert!(!fuzzy_match("zz", "git-navigator-demo"));
+        assert!(fuzzy_match("", "anything"));
+    }
+
+    #[test]
+    fn slash_starts_live_search_for_worktrees_and_escape_clears_it() {
+        let mut app = test_app();
+        app.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(
+            app.search,
+            Some(SearchState {
+                focus: Focus::Worktrees,
+                query: String::new(),
+            })
+        );
+
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.worktree_filter, "n");
+        assert_eq!(
+            app.search.as_ref().map(|search| search.query.as_str()),
+            Some("n")
+        );
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.search.is_none());
+        assert!(app.worktree_filter.is_empty());
+    }
+
+    #[test]
+    fn escape_clears_an_applied_search_without_reopening_search_mode() {
+        let mut app = test_app();
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.search.is_none());
+        assert_eq!(app.worktree_filter, "n");
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.worktree_filter.is_empty());
+    }
+
+    #[test]
+    fn selected_location_prefers_new_line_and_falls_back_to_old_line() {
+        let mut app = test_app();
+        app.files = vec![ChangedFile {
+            path: PathBuf::from("src/main.rs"),
+            old_path: None,
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            hunks: vec![DiffHunk {
+                header: "@@".into(),
+                kind: HunkKind::Unstaged,
+                collapsed: false,
+                rows: vec![
+                    DiffRow {
+                        old_number: Some(3),
+                        new_number: Some(4),
+                        old_text: Some("old".into()),
+                        new_text: Some("new".into()),
+                        kind: DiffRowKind::Modified,
+                    },
+                    DiffRow {
+                        old_number: Some(5),
+                        new_number: None,
+                        old_text: Some("deleted".into()),
+                        new_text: None,
+                        kind: DiffRowKind::Deleted,
+                    },
+                ],
+            }],
+            binary: false,
+        }];
+        app.file_tree = vec![FileTreeRow {
+            label: "└── main.rs".into(),
+            path: PathBuf::from("src/main.rs"),
+            file_index: Some(0),
+        }];
+        app.file_state.select(Some(0));
+        app.diff_state.select(Some(1));
+        app.worktrees = vec![Worktree {
+            path: PathBuf::from("/repo/worktree"),
+            branch: "main".into(),
+            head: "12345678".into(),
+            dirty: false,
+            is_current: true,
+            is_main: true,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        }];
+        app.worktree_state.select(Some(0));
+        assert_eq!(
+            app.selected_location(),
+            Some("/repo/worktree/src/main.rs:4".into())
+        );
+        app.diff_state.select(Some(2));
+        assert_eq!(
+            app.selected_location(),
+            Some("/repo/worktree/src/main.rs:5".into())
+        );
+    }
+
+    #[test]
+    fn slash_is_not_search_on_the_diff_panel() {
+        let mut app = test_app();
+        app.focus = Focus::Diff;
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn search_arrow_keys_switch_panels_and_navigate_without_enter() {
+        let mut app = test_app();
+        app.worktrees = vec![
+            Worktree {
+                path: PathBuf::from("/repo/one"),
+                branch: "one".into(),
+                head: "11111111".into(),
+                dirty: false,
+                is_current: true,
+                is_main: true,
+                available: true,
+                prunable_reason: None,
+                locked_reason: None,
+            },
+            Worktree {
+                path: PathBuf::from("/repo/two"),
+                branch: "two".into(),
+                head: "22222222".into(),
+                dirty: false,
+                is_current: false,
+                is_main: false,
+                available: true,
+                prunable_reason: None,
+                locked_reason: None,
+            },
+        ];
+        app.files = vec![ChangedFile::empty(
+            PathBuf::from("src/main.rs"),
+            FileStatus::Modified,
+        )];
+        app.file_tree = vec![FileTreeRow {
+            label: "└── main.rs".into(),
+            path: PathBuf::from("src/main.rs"),
+            file_index: Some(0),
+        }];
+        app.worktree_state.select(Some(0));
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.focus, Focus::Files);
+        assert!(app.search.is_none());
+
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('k')));
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(
+            app.search.as_ref().map(|search| search.query.as_str()),
+            Some("hjkl")
+        );
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.focus, Focus::Worktrees);
+        assert!(app.search.is_none());
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.worktree_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn filtered_file_tree_keeps_matching_ancestors() {
+        let files = vec![
+            ChangedFile::empty(PathBuf::from("src/git/parser.rs"), FileStatus::Modified),
+            ChangedFile::empty(PathBuf::from("src/main.rs"), FileStatus::Modified),
+            ChangedFile::empty(PathBuf::from("tests/test.rs"), FileStatus::Modified),
+        ];
+        let tree = build_file_tree(&files);
+        let visible = filtered_file_tree(&tree, &files, "parser");
+        let labels: Vec<String> = visible
+            .iter()
+            .map(|index| file_tree_label(&tree, *index, &visible))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["└── src", "    └── git", "        └── parser.rs"]
+        );
+
+        let all_rows = (0..tree.len()).collect::<Vec<_>>();
+        assert_eq!(
+            tree.iter()
+                .map(|row| file_tree_label(
+                    &tree,
+                    tree.iter()
+                        .position(|candidate| candidate.path == row.path)
+                        .unwrap(),
+                    &all_rows
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                "├── src",
+                "│   ├── git",
+                "│   │   └── parser.rs",
+                "│   └── main.rs",
+                "└── tests",
+                "    └── test.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_file_navigation_skips_filtered_directories() {
+        let tree = vec![
+            FileTreeRow {
+                label: "src".into(),
+                path: PathBuf::from("src"),
+                file_index: None,
+            },
+            FileTreeRow {
+                label: "src/main.rs".into(),
+                path: PathBuf::from("src/main.rs"),
+                file_index: Some(0),
+            },
+            FileTreeRow {
+                label: "tests/test.rs".into(),
+                path: PathBuf::from("tests/test.rs"),
+                file_index: Some(1),
+            },
+        ];
+        let visible = vec![0, 1, 2];
+        assert_eq!(
+            moved_visible_file_selection(None, &visible, &tree, 1),
+            Some(2)
+        );
+        assert_eq!(
+            moved_visible_file_selection(Some(1), &visible, &tree, 1),
+            Some(2)
+        );
     }
 
     #[test]
@@ -784,27 +1341,43 @@ mod tests {
         let tree = vec![
             FileTreeRow {
                 label: "src".into(),
+                path: PathBuf::from("src"),
                 file_index: None,
             },
             FileTreeRow {
                 label: "src/a.rs".into(),
+                path: PathBuf::from("src/a.rs"),
                 file_index: Some(0),
             },
             FileTreeRow {
                 label: "tests".into(),
+                path: PathBuf::from("tests"),
                 file_index: None,
             },
             FileTreeRow {
                 label: "tests/a.rs".into(),
+                path: PathBuf::from("tests/a.rs"),
                 file_index: Some(1),
             },
         ];
 
         assert_eq!(first_file_row(&tree), Some(1));
-        assert_eq!(moved_file_selection(Some(1), &tree, 1), Some(3));
-        assert_eq!(moved_file_selection(Some(3), &tree, -1), Some(1));
-        assert_eq!(moved_file_selection(Some(1), &tree, -1), Some(1));
-        assert_eq!(moved_file_selection(Some(3), &tree, 1), Some(3));
+        assert_eq!(
+            moved_visible_file_selection(Some(1), &[0, 1, 2, 3], &tree, 1),
+            Some(3)
+        );
+        assert_eq!(
+            moved_visible_file_selection(Some(3), &[0, 1, 2, 3], &tree, -1),
+            Some(1)
+        );
+        assert_eq!(
+            moved_visible_file_selection(Some(1), &[0, 1, 2, 3], &tree, -1),
+            Some(1)
+        );
+        assert_eq!(
+            moved_visible_file_selection(Some(3), &[0, 1, 2, 3], &tree, 1),
+            Some(3)
+        );
     }
 
     #[test]
@@ -909,6 +1482,19 @@ mod tests {
     }
 
     #[test]
+    fn changing_layout_from_expanded_mode_minimizes_the_panel() {
+        let mut app = test_app();
+        app.expanded = true;
+        app.panel_layout = PanelLayout::Columns;
+
+        app.handle_key(key(KeyCode::Char('t')));
+
+        assert!(!app.expanded);
+        assert_eq!(app.panel_layout, PanelLayout::SidebarLeft);
+        assert_eq!(app.focus, Focus::Worktrees);
+    }
+
+    #[test]
     fn narrow_initial_layout_starts_expanded_once() {
         let mut app = test_app();
         app.initial_layout_applied = false;
@@ -955,6 +1541,9 @@ mod tests {
             show_help: false,
             delete_confirmation: None,
             status: None,
+            worktree_filter: String::new(),
+            file_filter: String::new(),
+            search: None,
         }
     }
 
