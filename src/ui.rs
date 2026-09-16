@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use ratatui::{
-    Frame,
+    Frame, Terminal,
+    backend::TestBackend,
     layout::{Alignment, Constraint, Flex, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
@@ -99,6 +100,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+pub fn render_snapshot(app: &mut App, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("snapshot terminal should be created");
+    terminal
+        .draw(|frame| render(frame, app))
+        .expect("snapshot should render");
+    let buffer = terminal.backend().buffer();
+
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn interaction_areas(area: Rect, app: &mut App) -> [Rect; 3] {
     app.apply_initial_layout(area.width, COMPACT_LAYOUT_THRESHOLD);
     let [_header, body, _footer] = Layout::vertical([
@@ -136,12 +155,14 @@ fn history_items(app: &App) -> Vec<ListItem<'static>> {
         .and_then(|hash| app.commits.iter().position(|commit| commit.hash == hash));
     let mut items = Vec::with_capacity(app.commits.len() + 2);
     items.push(ListItem::new(Line::from(vec![
+        history_marker(history_wip_is_in_branch_diff(app)),
         Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
         Span::raw("Uncommitted changes"),
     ])));
 
     for (index, commit) in app.commits.iter().enumerate() {
         let commit_line = Line::from(vec![
+            history_marker(history_commit_is_in_branch_diff(app, index)),
             Span::styled(
                 format!("{} ", commit.short_hash),
                 Style::new().fg(Color::Cyan),
@@ -174,6 +195,48 @@ fn history_items(app: &App) -> Vec<ListItem<'static>> {
     }
 
     items
+}
+
+fn history_marker(active: bool) -> Span<'static> {
+    if active {
+        Span::styled("● ", Style::new().fg(Color::LightGreen).bold())
+    } else {
+        Span::raw("  ")
+    }
+}
+
+fn history_wip_is_in_branch_diff(app: &App) -> bool {
+    app.mode == ChangeMode::Branch
+        && app.selected_commit == Some(0)
+        && app.history_base_commit.is_some()
+}
+
+fn history_commit_is_in_branch_diff(app: &App, commit_index: usize) -> bool {
+    if app.mode != ChangeMode::Branch || app.history_base_commit.is_none() {
+        return false;
+    }
+
+    let base_index = app
+        .history_base_commit
+        .as_deref()
+        .and_then(|hash| app.commits.iter().position(|commit| commit.hash == hash));
+
+    let Some(selected_commit) = app.selected_commit else {
+        return false;
+    };
+    if selected_commit == 0 {
+        return base_index.is_none_or(|base_index| commit_index < base_index);
+    }
+    let selected_commit_index = selected_commit - 1;
+
+    match base_index {
+        Some(base_index) => {
+            selected_commit_index < base_index
+                && commit_index >= selected_commit_index
+                && commit_index < base_index
+        }
+        None => commit_index >= selected_commit_index,
+    }
 }
 
 #[cfg(test)]
@@ -1670,5 +1733,69 @@ mod tests {
             .collect();
         assert!(rendered.contains("base branch: main"));
         assert!(rendered.contains("base commit"));
+    }
+
+    #[test]
+    fn branch_history_marks_commits_between_selection_and_base() {
+        let commits = vec![
+            crate::model::Commit {
+                hash: "head".into(),
+                short_hash: "head".into(),
+                subject: "head commit".into(),
+            },
+            crate::model::Commit {
+                hash: "middle".into(),
+                short_hash: "middle".into(),
+                subject: "middle commit".into(),
+            },
+            crate::model::Commit {
+                hash: "base".into(),
+                short_hash: "base".into(),
+                subject: "base commit".into(),
+            },
+            crate::model::Commit {
+                hash: "older".into(),
+                short_hash: "older".into(),
+                subject: "older commit".into(),
+            },
+        ];
+        let mut app = App {
+            directory: PathBuf::from("/repo"),
+            base: "main".into(),
+            mode: ChangeMode::Branch,
+            diff_view: DiffView::Hunks,
+            diff_layout: DiffLayout::Split,
+            line_wrap: false,
+            expanded: false,
+            initial_layout_applied: true,
+            panel_layout: PanelLayout::Columns,
+            focus: Focus::Worktrees,
+            worktrees: vec![],
+            files: vec![],
+            file_tree: vec![],
+            worktree_state: ListState::default(),
+            history_state: ListState::default(),
+            file_state: ListState::default(),
+            diff_state: ratatui::widgets::TableState::default(),
+            show_help: false,
+            delete_confirmation: None,
+            status: None,
+            worktree_filter: String::new(),
+            file_filter: String::new(),
+            search: None,
+            worktree_panel: crate::app::WorktreePanel::History,
+            commits,
+            history_base_commit: Some("base".into()),
+            selected_commit: Some(2),
+            history_preferred_file: None,
+        };
+
+        assert!(!history_commit_is_in_branch_diff(&app, 0));
+        assert!(history_commit_is_in_branch_diff(&app, 1));
+        assert!(!history_commit_is_in_branch_diff(&app, 2));
+        assert!(!history_commit_is_in_branch_diff(&app, 3));
+
+        app.selected_commit = Some(0);
+        assert!(history_wip_is_in_branch_diff(&app));
     }
 }

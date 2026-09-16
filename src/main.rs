@@ -17,7 +17,11 @@ use ratatui::crossterm::{
     execute,
 };
 
-use crate::{app::App, cli::Cli, watcher::AutoRefresh};
+use crate::{
+    app::App,
+    cli::{Cli, RenderMode},
+    watcher::AutoRefresh,
+};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -29,11 +33,24 @@ fn main() -> Result<()> {
     if !directory.is_dir() {
         bail!("{} is not a directory", directory.display());
     }
+
+    let mut app = App::load(directory, cli.base)?;
+    if cli.render {
+        if cli.width == 0 || cli.height == 0 {
+            bail!("render width and height must be greater than zero");
+        }
+        app.mode = match cli.mode {
+            RenderMode::Uncommitted => crate::model::ChangeMode::Uncommitted,
+            RenderMode::Branch => crate::model::ChangeMode::Branch,
+        };
+        app.prepare_render(cli.history, cli.commit.as_deref())?;
+        println!("{}", ui::render_snapshot(&mut app, cli.width, cli.height));
+        return Ok(());
+    }
     if !std::io::stdout().is_terminal() {
         bail!("git-navigator requires an interactive terminal");
     }
 
-    let mut app = App::load(directory, cli.base)?;
     let mut auto_refresh = AutoRefresh::new(
         &app.directory,
         app.selected_worktree()

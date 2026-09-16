@@ -57,6 +57,14 @@ Pass a directory anywhere inside the repository you want to inspect:
 git-navigator .
 ```
 
+For deterministic AI or test inspection, render a fixed-size text snapshot instead of opening the interactive TUI:
+
+```shell
+git-navigator . --render --history --mode branch --commit <short-or-full-hash> --width 120 --height 40
+```
+
+The command writes the terminal cell contents to standard output, so an AI or test can inspect the complete screen without sending keyboard input. Omit `--commit` to render WIP, or omit `--history` to render the normal initial layout. Use `--mode uncommitted` or `--mode branch` to select the comparison mode. When a commit is selected, the Files and Diff panels show that commit too.
+
 The comparison base defaults to `main`. It can be changed with the base option when a repository uses another primary branch.
 
 ## Interface
@@ -154,6 +162,8 @@ WIP       Uncommitted changes
 ```
 
 The WIP entry shows the current live worktree changes. Moving down to a commit shows the Files and Diff belonging to that exact commit. Moving back to WIP restores the live view.
+
+In Branch mode, a green `●` marks the commits included in the currently displayed branch diff. The marker starts at the selected commit and continues toward, but not including, the base branch commit. WIP marks the whole branch range when it is selected.
 
 Git Navigator remembers the preferred file while moving between WIP and commits. If that file exists in a selected commit, it remains selected. If it does not exist, the first changed file is selected temporarily, while the preferred path remains remembered for later commits.
 

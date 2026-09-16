@@ -492,6 +492,50 @@ impl App {
         self.history_active() && self.selected_commit.is_some_and(|index| index > 0)
     }
 
+    pub fn prepare_render(&mut self, history: bool, selected_commit: Option<&str>) -> Result<()> {
+        if let Some(hash) = selected_commit.filter(|_| !history) {
+            anyhow::bail!("--commit requires --history when rendering: {hash}");
+        }
+
+        if history {
+            let worktree_path = self
+                .selected_worktree()
+                .map(|worktree| worktree.path.clone())
+                .context("no worktree is selected")?;
+            self.commits = git::commit_history(&worktree_path)?;
+            self.history_base_commit = git::history_base_commit(&worktree_path, &self.base).ok();
+            self.worktree_panel = WorktreePanel::History;
+            self.focus = Focus::Worktrees;
+            self.selected_commit = match selected_commit {
+                Some(hash) => Some(
+                    self.commits
+                        .iter()
+                        .position(|commit| commit.hash == hash || commit.short_hash == hash)
+                        .map(|index| index + 1)
+                        .with_context(|| {
+                            format!("commit '{hash}' was not found in rendered history")
+                        })?,
+                ),
+                None => Some(0),
+            };
+            self.history_state.select(self.selected_commit);
+            if self.history_commit_selected() {
+                self.reload_selected_commit();
+            } else {
+                self.reload_files(None);
+            }
+        } else {
+            self.reload_files(None);
+        }
+
+        if let Some(status) = self.status.take()
+            && status.kind == StatusKind::Error
+        {
+            anyhow::bail!("{}", status.text);
+        }
+        Ok(())
+    }
+
     pub fn search_query(&self, focus: Focus) -> &str {
         match focus {
             Focus::Worktrees => &self.worktree_filter,
@@ -1122,41 +1166,43 @@ impl App {
     }
 
     fn reload_selected_commit(&mut self) {
+        if let Err(error) = self.load_selected_commit_files() {
+            self.set_error(format!("Could not load commit: {error:#}"));
+        }
+    }
+
+    fn load_selected_commit_files(&mut self) -> Result<()> {
         let Some(commit_index) = self.selected_commit.and_then(|index| index.checked_sub(1)) else {
-            let preferred = self.history_preferred_file.clone();
-            self.reload_files(preferred.as_deref());
-            return;
+            anyhow::bail!("no historical commit is selected");
         };
-        let Some(worktree) = self.selected_worktree() else {
-            return;
-        };
-        match git::load_commit_changes(
-            &worktree.path,
+        let worktree_path = self
+            .selected_worktree()
+            .map(|worktree| worktree.path.clone())
+            .context("no worktree is selected")?;
+        let files = git::load_commit_changes(
+            &worktree_path,
             &self.commits[commit_index],
             self.diff_view,
             self.mode,
             &self.base,
-        ) {
-            Ok(files) => {
-                self.files = files;
-                self.file_tree = build_file_tree(&self.files);
-                let selected = self
-                    .history_preferred_file
-                    .as_deref()
-                    .and_then(|path| {
-                        self.file_tree.iter().position(|row| {
-                            row.file_index
-                                .and_then(|index| self.files.get(index))
-                                .is_some_and(|file| file.path == path)
-                        })
-                    })
-                    .or_else(|| first_file_row(&self.file_tree));
-                self.file_state.select(selected);
-                self.diff_state
-                    .select(first_diff_row(&self.files, &self.file_tree, selected));
-            }
-            Err(error) => self.set_error(format!("Could not load commit: {error:#}")),
-        }
+        )?;
+        self.files = files;
+        self.file_tree = build_file_tree(&self.files);
+        let selected = self
+            .history_preferred_file
+            .as_deref()
+            .and_then(|path| {
+                self.file_tree.iter().position(|row| {
+                    row.file_index
+                        .and_then(|index| self.files.get(index))
+                        .is_some_and(|file| file.path == path)
+                })
+            })
+            .or_else(|| first_file_row(&self.file_tree));
+        self.file_state.select(selected);
+        self.diff_state
+            .select(first_diff_row(&self.files, &self.file_tree, selected));
+        Ok(())
     }
 
     fn search_diff(&mut self, direction: isize) {
