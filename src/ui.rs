@@ -1341,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn layouts_hide_worktrees_when_no_linked_worktree_exists() {
+    fn layouts_hide_worktrees_when_no_linked_worktree_exists_and_history_is_inactive() {
         let area = Rect::new(0, 0, 100, 40);
         let [worktrees, files, diff] =
             panel_areas_for(area, Focus::Files, false, PanelLayout::Columns, false);
@@ -1349,6 +1349,19 @@ mod tests {
         assert_eq!(worktrees, Rect::default());
         assert_eq!(files.width, 25);
         assert_eq!(diff.x, files.right());
+        assert_eq!(diff.width, 75);
+    }
+
+    #[test]
+    fn history_layouts_keep_the_first_panel_visible_without_linked_worktrees() {
+        let area = Rect::new(0, 0, 100, 40);
+        let [history, files, diff] =
+            panel_areas_for(area, Focus::Files, false, PanelLayout::SidebarLeft, true);
+
+        assert_eq!(history.width, 25);
+        assert_eq!(files.width, 25);
+        assert_eq!(files.y, history.bottom());
+        assert_eq!(diff.x, 25);
         assert_eq!(diff.width, 75);
     }
 

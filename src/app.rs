@@ -75,7 +75,13 @@ pub enum WorktreePanel {
 }
 
 impl Focus {
-    fn left(self) -> Self {
+    fn left(self, first_panel_visible: bool) -> Self {
+        if !first_panel_visible {
+            return match self {
+                Self::Diff => Self::Files,
+                Self::Files | Self::Worktrees => Self::Files,
+            };
+        }
         match self {
             Self::Worktrees => Self::Worktrees,
             Self::Files => Self::Worktrees,
@@ -83,12 +89,35 @@ impl Focus {
         }
     }
 
-    fn right(self) -> Self {
+    fn right(self, first_panel_visible: bool) -> Self {
+        if !first_panel_visible {
+            return match self {
+                Self::Files | Self::Worktrees => Self::Diff,
+                Self::Diff => Self::Diff,
+            };
+        }
         match self {
             Self::Worktrees => Self::Files,
             Self::Files => Self::Diff,
             Self::Diff => Self::Diff,
         }
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::Focus;
+
+    #[test]
+    fn focus_navigation_handles_two_and_three_panel_layouts() {
+        assert_eq!(Focus::Diff.left(false), Focus::Files);
+        assert_eq!(Focus::Files.left(false), Focus::Files);
+        assert_eq!(Focus::Files.right(false), Focus::Diff);
+
+        assert_eq!(Focus::Diff.left(true), Focus::Files);
+        assert_eq!(Focus::Files.left(true), Focus::Worktrees);
+        assert_eq!(Focus::Worktrees.right(true), Focus::Files);
+        assert_eq!(Focus::Files.right(true), Focus::Diff);
     }
 }
 
@@ -140,6 +169,17 @@ impl App {
                 worktrees[selected_worktree].path.display()
             )
         })?;
+        let has_linked_worktrees = worktrees.iter().any(|worktree| !worktree.is_main);
+        let commits = if has_linked_worktrees {
+            Vec::new()
+        } else {
+            git::commit_history(&worktrees[selected_worktree].path).with_context(|| {
+                format!(
+                    "failed to load history for {}",
+                    worktrees[selected_worktree].path.display()
+                )
+            })?
+        };
 
         let mut worktree_state = ListState::default();
         worktree_state.select(Some(selected_worktree));
@@ -149,10 +189,16 @@ impl App {
         let mut diff_state = TableState::default();
         diff_state.select(first_diff_row(&files, &file_tree, file_state.selected()));
 
-        let focus = if worktrees.iter().any(|worktree| !worktree.is_main) {
-            Focus::Worktrees
+        let focus = Focus::Files;
+        let history_preferred_file = if has_linked_worktrees {
+            None
         } else {
-            Focus::Files
+            file_state
+                .selected()
+                .and_then(|row| file_tree.get(row))
+                .and_then(|row| row.file_index)
+                .and_then(|index| files.get(index))
+                .map(|file| file.path.clone())
         };
 
         Ok(Self {
@@ -164,7 +210,7 @@ impl App {
             line_wrap: false,
             expanded: false,
             initial_layout_applied: false,
-            panel_layout: PanelLayout::Columns,
+            panel_layout: PanelLayout::SidebarLeft,
             focus,
             worktrees,
             files,
@@ -178,10 +224,14 @@ impl App {
             worktree_filter: String::new(),
             file_filter: String::new(),
             search: None,
-            worktree_panel: WorktreePanel::Worktrees,
-            commits: Vec::new(),
-            selected_commit: None,
-            history_preferred_file: None,
+            worktree_panel: if has_linked_worktrees {
+                WorktreePanel::Worktrees
+            } else {
+                WorktreePanel::History
+            },
+            commits,
+            selected_commit: (!has_linked_worktrees).then_some(0),
+            history_preferred_file,
         })
     }
 
@@ -227,19 +277,12 @@ impl App {
             KeyCode::Char('w') => self.line_wrap = !self.line_wrap,
             KeyCode::Char(' ') => self.expanded = !self.expanded,
             KeyCode::Char('t') => {
-                self.panel_layout = if self.has_linked_worktrees() {
-                    self.panel_layout.toggle()
-                } else {
-                    match self.panel_layout {
-                        PanelLayout::Columns | PanelLayout::SidebarLeft => PanelLayout::SidebarTop,
-                        PanelLayout::SidebarTop => PanelLayout::Columns,
-                    }
-                };
+                self.panel_layout = self.panel_layout.toggle();
                 self.expanded = false;
             }
             KeyCode::Char('/') => self.begin_search(),
             KeyCode::Left | KeyCode::Char('h') => self.focus_left(),
-            KeyCode::Right | KeyCode::Char('l') => self.focus_right(),
+            KeyCode::Right => self.focus_right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::PageUp if self.focus == Focus::Diff => self.move_diff_by(-10),
@@ -861,6 +904,9 @@ impl App {
 
     fn toggle_history(&mut self) {
         if self.history_active() {
+            if !self.has_linked_worktrees() {
+                return;
+            }
             self.worktree_panel = WorktreePanel::Worktrees;
             self.selected_commit = None;
             let preferred = self.history_preferred_file.take();
@@ -1013,25 +1059,15 @@ impl App {
     }
 
     fn focus_left(&mut self) {
-        self.focus = if self.has_linked_worktrees() {
-            self.focus.left()
-        } else {
-            match self.focus {
-                Focus::Diff => Focus::Files,
-                Focus::Files | Focus::Worktrees => Focus::Files,
-            }
-        };
+        self.focus = self
+            .focus
+            .left(self.has_linked_worktrees() || self.history_active());
     }
 
     fn focus_right(&mut self) {
-        self.focus = if self.has_linked_worktrees() {
-            self.focus.right()
-        } else {
-            match self.focus {
-                Focus::Files | Focus::Worktrees => Focus::Diff,
-                Focus::Diff => Focus::Diff,
-            }
-        };
+        self.focus = self
+            .focus
+            .right(self.has_linked_worktrees() || self.history_active());
     }
 
     fn copy_selected_location(&mut self) {
@@ -1890,15 +1926,33 @@ mod tests {
     }
 
     #[test]
-    fn panel_layout_cycle_skips_left_sidebar_without_linked_worktrees() {
+    fn panel_layout_cycle_includes_all_layouts_without_linked_worktrees() {
         let mut app = test_app();
         app.panel_layout = PanelLayout::Columns;
+        app.worktree_panel = WorktreePanel::History;
+
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.panel_layout, PanelLayout::SidebarLeft);
 
         app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(app.panel_layout, PanelLayout::SidebarTop);
 
         app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(app.panel_layout, PanelLayout::Columns);
+    }
+
+    #[test]
+    fn history_mode_navigation_reaches_the_history_panel_without_linked_worktrees() {
+        let mut app = test_app();
+        app.worktree_panel = WorktreePanel::History;
+        app.focus = Focus::Files;
+
+        app.handle_key(key(KeyCode::Left));
+
+        assert_eq!(app.focus, Focus::Worktrees);
+
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.focus, Focus::Files);
     }
 
     #[test]
@@ -2086,6 +2140,34 @@ mod tests {
         app.apply_initial_layout(120, 120);
         assert!(!app.expanded);
         assert_eq!(app.diff_layout, crate::model::DiffLayout::Split);
+    }
+
+    #[test]
+    fn a_single_worktree_can_start_in_history_mode() {
+        let mut app = test_app();
+        app.worktrees.push(Worktree {
+            path: PathBuf::from("/repo"),
+            branch: "main".into(),
+            head: "12345678".into(),
+            dirty: false,
+            is_current: true,
+            is_main: true,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
+
+        let has_linked_worktrees = app.worktrees.iter().any(|worktree| !worktree.is_main);
+        assert!(!has_linked_worktrees);
+        app.worktree_panel = if has_linked_worktrees {
+            WorktreePanel::Worktrees
+        } else {
+            WorktreePanel::History
+        };
+        app.selected_commit = (!has_linked_worktrees).then_some(0);
+
+        assert!(app.history_active());
+        assert_eq!(app.selected_commit, Some(0));
     }
 
     fn test_app() -> App {
