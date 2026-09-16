@@ -138,6 +138,12 @@ impl App {
         let mut diff_state = TableState::default();
         diff_state.select(first_diff_row(&files, &file_tree, file_state.selected()));
 
+        let focus = if worktrees.iter().any(|worktree| !worktree.is_main) {
+            Focus::Worktrees
+        } else {
+            Focus::Files
+        };
+
         Ok(Self {
             directory,
             base,
@@ -148,7 +154,7 @@ impl App {
             expanded: false,
             initial_layout_applied: false,
             panel_layout: PanelLayout::Columns,
-            focus: Focus::Worktrees,
+            focus,
             worktrees,
             files,
             file_tree,
@@ -203,12 +209,19 @@ impl App {
             KeyCode::Char('w') => self.line_wrap = !self.line_wrap,
             KeyCode::Char(' ') => self.expanded = !self.expanded,
             KeyCode::Char('t') => {
-                self.panel_layout = self.panel_layout.toggle();
+                self.panel_layout = if self.has_linked_worktrees() {
+                    self.panel_layout.toggle()
+                } else {
+                    match self.panel_layout {
+                        PanelLayout::Columns | PanelLayout::SidebarLeft => PanelLayout::SidebarTop,
+                        PanelLayout::SidebarTop => PanelLayout::Columns,
+                    }
+                };
                 self.expanded = false;
             }
-            KeyCode::Char('/') if self.focus != Focus::Diff => self.begin_search(),
-            KeyCode::Left | KeyCode::Char('h') => self.focus = self.focus.left(),
-            KeyCode::Right | KeyCode::Char('l') => self.focus = self.focus.right(),
+            KeyCode::Char('/') => self.begin_search(),
+            KeyCode::Left | KeyCode::Char('h') => self.focus_left(),
+            KeyCode::Right | KeyCode::Char('l') => self.focus_right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
             KeyCode::PageUp if self.focus == Focus::Diff => self.move_diff_by(-10),
@@ -244,6 +257,10 @@ impl App {
         self.worktree_state
             .selected()
             .and_then(|index| self.worktrees.get(index))
+    }
+
+    pub fn has_linked_worktrees(&self) -> bool {
+        self.worktrees.iter().any(|worktree| !worktree.is_main)
     }
 
     pub fn search_query(&self, focus: Focus) -> &str {
@@ -315,6 +332,28 @@ impl App {
         let file = self.selected_file()?;
         let row = self.diff_state.selected()?;
         hunk_at_row(file, row)
+    }
+
+    pub fn diff_search_match_position(&self) -> Option<(usize, usize)> {
+        let search = self
+            .search
+            .as_ref()
+            .filter(|search| search.focus == Focus::Diff)?;
+        if search.query.is_empty() {
+            return None;
+        }
+
+        let matches = self.diff_matches(&search.query);
+        if matches.is_empty() {
+            return Some((0, 0));
+        }
+
+        let current = self
+            .diff_state
+            .selected()
+            .and_then(|selected| matches.iter().position(|row| *row == selected))
+            .map_or(0, |position| position + 1);
+        Some((current, matches.len()))
     }
 
     pub fn modal_open(&self) -> bool {
@@ -426,6 +465,10 @@ impl App {
         match git::discover_worktrees(&self.directory) {
             Ok(worktrees) => {
                 self.worktrees = worktrees;
+                if !self.has_linked_worktrees() && self.focus == Focus::Worktrees {
+                    self.focus = Focus::Files;
+                    self.search = None;
+                }
                 let selected = selected_worktree
                     .as_deref()
                     .and_then(|path| worktree_index(&self.worktrees, path))
@@ -643,6 +686,7 @@ impl App {
                 self.set_filter(focus, String::new());
                 self.search = None;
             }
+            KeyCode::Enter if search.focus == Focus::Diff => self.search_diff(1),
             KeyCode::Enter => self.search = None,
             KeyCode::Left => self.switch_search_panel(false),
             KeyCode::Right => self.switch_search_panel(true),
@@ -654,6 +698,15 @@ impl App {
                     query: query.clone(),
                 });
                 self.set_filter(search.focus, query);
+                if search.focus == Focus::Diff {
+                    self.search_diff_query(
+                        &self
+                            .search
+                            .as_ref()
+                            .map_or(String::new(), |search| search.query.clone()),
+                        -1,
+                    );
+                }
             }
             KeyCode::Char(character) => {
                 let mut query = search.query;
@@ -663,9 +716,18 @@ impl App {
                     query: query.clone(),
                 });
                 self.set_filter(search.focus, query);
+                if search.focus == Focus::Diff {
+                    self.search_diff_query(
+                        &self
+                            .search
+                            .as_ref()
+                            .map_or(String::new(), |search| search.query.clone()),
+                        0,
+                    );
+                }
             }
-            KeyCode::Up => self.move_up(),
-            KeyCode::Down => self.move_down(),
+            KeyCode::Up => self.search_diff(-1),
+            KeyCode::Down => self.search_diff(1),
             _ => {}
         }
     }
@@ -711,7 +773,7 @@ impl App {
                 self.diff_state
                     .select(first_diff_row(&self.files, &self.file_tree, selected));
             }
-            Focus::Diff => {}
+            Focus::Diff => self.search_diff(0),
         }
     }
 
@@ -719,6 +781,100 @@ impl App {
         if !self.search_query(focus).is_empty() {
             self.set_filter(focus, String::new());
         }
+    }
+
+    fn search_diff(&mut self, direction: isize) {
+        let Some(query) = self.search.as_ref().map(|search| search.query.clone()) else {
+            return;
+        };
+        self.search_diff_query(&query, direction);
+    }
+
+    fn search_diff_query(&mut self, query: &str, direction: isize) {
+        if query.is_empty() {
+            return;
+        }
+        let matches = self.diff_matches(query);
+        if matches.is_empty() {
+            self.set_error(format!("No diff match for {query:?}"));
+            return;
+        }
+        let current = self.diff_state.selected().unwrap_or(matches[0]);
+        let next = if direction > 0 {
+            matches
+                .iter()
+                .copied()
+                .find(|row| *row > current)
+                .unwrap_or(matches[0])
+        } else if direction < 0 {
+            matches
+                .iter()
+                .rev()
+                .copied()
+                .find(|row| *row < current)
+                .unwrap_or(*matches.last().unwrap_or(&matches[0]))
+        } else {
+            matches[0]
+        };
+        self.diff_state.select(Some(next));
+    }
+
+    fn diff_matches(&self, query: &str) -> Vec<usize> {
+        let Some(file) = self.selected_file() else {
+            return Vec::new();
+        };
+        let query = query.to_lowercase();
+        let mut matches = Vec::new();
+        let mut row_index = 0;
+        for hunk in &file.hunks {
+            if hunk.header.to_lowercase().contains(&query) {
+                matches.push(row_index);
+            }
+            row_index += 1;
+            if !hunk.collapsed {
+                for row in &hunk.rows {
+                    if row
+                        .old_text
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&query)
+                        || row
+                            .new_text
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&query)
+                    {
+                        matches.push(row_index);
+                    }
+                    row_index += 1;
+                }
+            }
+        }
+        matches
+    }
+
+    fn focus_left(&mut self) {
+        self.focus = if self.has_linked_worktrees() {
+            self.focus.left()
+        } else {
+            match self.focus {
+                Focus::Diff => Focus::Files,
+                Focus::Files | Focus::Worktrees => Focus::Files,
+            }
+        };
+    }
+
+    fn focus_right(&mut self) {
+        self.focus = if self.has_linked_worktrees() {
+            self.focus.right()
+        } else {
+            match self.focus {
+                Focus::Files | Focus::Worktrees => Focus::Diff,
+                Focus::Diff => Focus::Diff,
+            }
+        };
     }
 
     fn copy_selected_location(&mut self) {
@@ -1029,7 +1185,7 @@ fn diff_row_for_position(file: &ChangedFile, position: &DiffPosition) -> Option<
 mod tests {
     use super::*;
     use crate::model::{DiffHunk, DiffRow, DiffRowKind, FileStatus, HunkKind};
-    use ratatui::crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
+    use ratatui::crossterm::event::{KeyEventKind, KeyEventState};
 
     #[test]
     fn selection_stops_at_list_boundaries() {
@@ -1147,11 +1303,80 @@ mod tests {
     }
 
     #[test]
-    fn slash_is_not_search_on_the_diff_panel() {
+    fn slash_starts_contains_search_on_the_diff_panel() {
         let mut app = test_app();
         app.focus = Focus::Diff;
         app.handle_key(key(KeyCode::Char('/')));
-        assert!(app.search.is_none());
+        assert_eq!(
+            app.search.as_ref().map(|search| search.focus),
+            Some(Focus::Diff)
+        );
+    }
+
+    #[test]
+    fn diff_search_jumps_to_matching_rows_and_wraps() {
+        let mut app = test_app();
+        app.files = vec![ChangedFile {
+            path: PathBuf::from("src/main.rs"),
+            old_path: None,
+            status: FileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            hunks: vec![DiffHunk {
+                header: "@@".into(),
+                kind: HunkKind::Unstaged,
+                collapsed: false,
+                rows: vec![
+                    DiffRow {
+                        old_number: Some(1),
+                        new_number: Some(1),
+                        old_text: Some("alpha".into()),
+                        new_text: Some("alpha".into()),
+                        kind: DiffRowKind::Context,
+                    },
+                    DiffRow {
+                        old_number: Some(2),
+                        new_number: Some(2),
+                        old_text: Some("beta".into()),
+                        new_text: Some("target one".into()),
+                        kind: DiffRowKind::Modified,
+                    },
+                    DiffRow {
+                        old_number: Some(3),
+                        new_number: Some(3),
+                        old_text: Some("target two".into()),
+                        new_text: Some("gamma".into()),
+                        kind: DiffRowKind::Modified,
+                    },
+                ],
+            }],
+            binary: false,
+        }];
+        app.file_tree = vec![FileTreeRow {
+            label: "└── main.rs".into(),
+            path: PathBuf::from("src/main.rs"),
+            file_index: Some(0),
+        }];
+        app.file_state.select(Some(0));
+        app.diff_state.select(Some(0));
+        app.focus = Focus::Diff;
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('t')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('r')));
+        app.handle_key(key(KeyCode::Char('g')));
+        app.handle_key(key(KeyCode::Char('e')));
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.diff_state.selected(), Some(2));
+        assert_eq!(app.diff_search_match_position(), Some((1, 2)));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.diff_state.selected(), Some(3));
+        assert_eq!(app.diff_search_match_position(), Some((2, 2)));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.diff_state.selected(), Some(2));
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.diff_state.selected(), Some(3));
     }
 
     #[test]
@@ -1455,6 +1680,17 @@ mod tests {
     #[test]
     fn expanded_mode_follows_horizontal_focus_navigation() {
         let mut app = test_app();
+        app.worktrees.push(Worktree {
+            path: PathBuf::from("/repo/agent"),
+            branch: "agent".into(),
+            head: "12345678".into(),
+            dirty: false,
+            is_current: false,
+            is_main: false,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
         assert!(!app.expanded);
 
         app.handle_key(key(KeyCode::Char(' ')));
@@ -1482,8 +1718,31 @@ mod tests {
     }
 
     #[test]
+    fn panel_layout_cycle_skips_left_sidebar_without_linked_worktrees() {
+        let mut app = test_app();
+        app.panel_layout = PanelLayout::Columns;
+
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.panel_layout, PanelLayout::SidebarTop);
+
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.panel_layout, PanelLayout::Columns);
+    }
+
+    #[test]
     fn changing_layout_from_expanded_mode_minimizes_the_panel() {
         let mut app = test_app();
+        app.worktrees.push(Worktree {
+            path: PathBuf::from("/repo/agent"),
+            branch: "agent".into(),
+            head: "12345678".into(),
+            dirty: false,
+            is_current: false,
+            is_main: false,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
         app.expanded = true;
         app.panel_layout = PanelLayout::Columns;
 
@@ -1550,7 +1809,7 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
             code,
-            modifiers: KeyModifiers::NONE,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         }

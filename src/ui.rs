@@ -21,6 +21,7 @@ const ACTIVE_BORDER: Color = Color::Cyan;
 const INACTIVE_BORDER: Color = Color::DarkGray;
 const COMPACT_LAYOUT_THRESHOLD: u16 = 120;
 const WORKTREE_ITEM_HEIGHT: usize = 2;
+const SEARCH_MATCH_BG: Color = Color::Rgb(100, 80, 0);
 const SELECTED: Style = Style::new()
     .fg(Color::Black)
     .bg(Color::Cyan)
@@ -35,8 +36,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     render_header(frame, app, header);
-    let [worktrees, files, diff] = panel_areas(body, app.focus, app.expanded, app.panel_layout);
-    if app.expanded && app.focus != Focus::Worktrees {
+    let show_worktrees = app.has_linked_worktrees();
+    let [worktrees, files, diff] = panel_areas_for(
+        body,
+        app.focus,
+        app.expanded,
+        app.panel_layout,
+        show_worktrees,
+    );
+    if show_worktrees && app.expanded && app.focus != Focus::Worktrees {
         render_compact_panel(
             frame,
             worktrees,
@@ -48,7 +56,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     .position(|index| *index == selected)
             }),
         );
-    } else {
+    } else if show_worktrees {
         render_worktrees(frame, app, worktrees);
     }
     if app.expanded && app.focus != Focus::Files {
@@ -87,7 +95,47 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+#[cfg(test)]
 fn panel_areas(area: Rect, focus: Focus, expanded: bool, panel_layout: PanelLayout) -> [Rect; 3] {
+    panel_areas_for(area, focus, expanded, panel_layout, true)
+}
+
+fn panel_areas_for(
+    area: Rect,
+    focus: Focus,
+    expanded: bool,
+    panel_layout: PanelLayout,
+    show_worktrees: bool,
+) -> [Rect; 3] {
+    if !show_worktrees {
+        if expanded {
+            let [files, diff] = match focus {
+                Focus::Diff => {
+                    Layout::horizontal([Constraint::Length(5), Constraint::Fill(1)]).areas(area)
+                }
+                Focus::Files | Focus::Worktrees => {
+                    Layout::horizontal([Constraint::Fill(1), Constraint::Length(5)]).areas(area)
+                }
+            };
+            return [Rect::default(), files, diff];
+        }
+
+        return match panel_layout {
+            PanelLayout::Columns | PanelLayout::SidebarLeft => {
+                let [files, diff] =
+                    Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)])
+                        .areas(area);
+                [Rect::default(), files, diff]
+            }
+            PanelLayout::SidebarTop => {
+                let [files, diff] =
+                    Layout::vertical([Constraint::Percentage(25), Constraint::Percentage(75)])
+                        .areas(area);
+                [Rect::default(), files, diff]
+            }
+        };
+    }
+
     if expanded {
         let constraints = match focus {
             Focus::Worktrees => [
@@ -373,6 +421,20 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 if app.line_wrap { ", WRAP" } else { "" }
             )
         });
+    let title = if let Some(search) = &app.search {
+        if search.focus == Focus::Diff {
+            let position = app
+                .diff_search_match_position()
+                .map_or_else(String::new, |(current, total)| {
+                    format!(" ({current}/{total})")
+                });
+            format!("{title} /{}/{}", search.query, position)
+        } else {
+            title
+        }
+    } else {
+        title
+    };
     let block = pane_block(&title, app.focus == Focus::Diff);
 
     let Some(file) = app.selected_file() else {
@@ -413,7 +475,19 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rows = diff_rows(file, app.mode, effective_layout, app.line_wrap, area);
+    let search_query = app
+        .search
+        .as_ref()
+        .filter(|search| search.focus == Focus::Diff)
+        .map_or("", |search| search.query.as_str());
+    let rows = diff_rows(
+        file,
+        app.mode,
+        effective_layout,
+        app.line_wrap,
+        search_query,
+        area,
+    );
     let (widths, header) = match effective_layout {
         DiffLayout::Split => (
             vec![
@@ -458,6 +532,7 @@ fn diff_rows(
     mode: ChangeMode,
     layout: DiffLayout,
     line_wrap: bool,
+    search_query: &str,
     area: Rect,
 ) -> Vec<Row<'static>> {
     let mut rendered = Vec::new();
@@ -467,22 +542,26 @@ fn diff_rows(
         rendered.push(
             Row::new([
                 Cell::from(marker),
-                Cell::from(Line::from(vec![
-                    Span::styled(format!(" {} ", hunk.kind.label()), badge_style),
-                    Span::raw(" "),
-                    Span::styled(hunk.header.clone(), Style::new().fg(Color::Cyan)),
-                ])),
+                Cell::from(Line::from(
+                    [
+                        vec![Span::styled(
+                            format!(" {} ", hunk.kind.label()),
+                            badge_style,
+                        )],
+                        vec![Span::raw(" ")],
+                        highlighted_spans(&hunk.header, Style::new().fg(Color::Cyan), search_query),
+                    ]
+                    .concat(),
+                )),
                 Cell::from(""),
                 Cell::from(""),
             ])
             .style(Style::new().bg(Color::Rgb(24, 29, 37))),
         );
         if !hunk.collapsed {
-            rendered.extend(
-                hunk.rows
-                    .iter()
-                    .map(|row| render_diff_row(row, mode, hunk.kind, layout, line_wrap, area)),
-            );
+            rendered.extend(hunk.rows.iter().map(|row| {
+                render_diff_row(row, mode, hunk.kind, layout, line_wrap, search_query, area)
+            }));
         }
     }
     rendered
@@ -494,6 +573,7 @@ fn render_diff_row(
     hunk_kind: HunkKind,
     layout: DiffLayout,
     line_wrap: bool,
+    search_query: &str,
     area: Rect,
 ) -> Row<'static> {
     let content_width = diff_content_width(area, layout);
@@ -509,15 +589,20 @@ fn render_diff_row(
                 .max(1) as u16;
             Row::new([
                 Cell::from(line_number(row.old_number)).style(old_style),
-                Cell::from(old_text).style(old_style),
+                Cell::from(highlighted_text(&old_text, old_style, search_query)),
                 Cell::from(line_number(row.new_number)).style(new_style),
-                Cell::from(new_text).style(new_style),
+                Cell::from(highlighted_text(&new_text, new_style, search_query)),
             ])
             .height(height)
         }
-        DiffLayout::Unified => {
-            render_unified_diff_row(row, old_style, new_style, line_wrap, content_width)
-        }
+        DiffLayout::Unified => render_unified_diff_row(
+            row,
+            old_style,
+            new_style,
+            line_wrap,
+            search_query,
+            content_width,
+        ),
     }
 }
 
@@ -526,6 +611,7 @@ fn render_unified_diff_row(
     old_style: Style,
     new_style: Style,
     line_wrap: bool,
+    search_query: &str,
     content_width: usize,
 ) -> Row<'static> {
     match row.kind {
@@ -536,6 +622,7 @@ fn render_unified_diff_row(
             row.new_text.as_deref().or(row.old_text.as_deref()),
             old_style,
             line_wrap,
+            search_query,
             content_width,
         ),
         DiffRowKind::Deleted => unified_row(
@@ -545,6 +632,7 @@ fn render_unified_diff_row(
             row.old_text.as_deref(),
             old_style,
             line_wrap,
+            search_query,
             content_width,
         ),
         DiffRowKind::Added => unified_row(
@@ -554,14 +642,21 @@ fn render_unified_diff_row(
             row.new_text.as_deref(),
             new_style,
             line_wrap,
+            search_query,
             content_width,
         ),
-        DiffRowKind::Modified => {
-            unified_modified_row(row, old_style, new_style, line_wrap, content_width)
-        }
+        DiffRowKind::Modified => unified_modified_row(
+            row,
+            old_style,
+            new_style,
+            line_wrap,
+            search_query,
+            content_width,
+        ),
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn unified_row(
     old_number: Option<usize>,
     new_number: Option<usize>,
@@ -569,6 +664,7 @@ fn unified_row(
     text: Option<&str>,
     style: Style,
     line_wrap: bool,
+    search_query: &str,
     content_width: usize,
 ) -> Row<'static> {
     let text = display_text(text, line_wrap, content_width.saturating_sub(2).max(1));
@@ -576,7 +672,12 @@ fn unified_row(
     Row::new([
         Cell::from(line_number(old_number)).style(style),
         Cell::from(line_number(new_number)).style(style),
-        Cell::from(Text::from(prefixed_lines(prefix, &text, style))),
+        Cell::from(Text::from(prefixed_lines_with_search(
+            prefix,
+            &text,
+            style,
+            search_query,
+        ))),
         Cell::from(""),
     ])
     .height(height)
@@ -587,6 +688,7 @@ fn unified_modified_row(
     old_style: Style,
     new_style: Style,
     line_wrap: bool,
+    search_query: &str,
     content_width: usize,
 ) -> Row<'static> {
     let old_text = display_text(
@@ -601,7 +703,13 @@ fn unified_modified_row(
     );
     let old_height = old_text.split('\n').count();
     let new_height = new_text.split('\n').count();
-    let code_lines = unified_modified_lines(&old_text, &new_text, old_style, new_style);
+    let code_lines = unified_modified_lines_with_search(
+        &old_text,
+        &new_text,
+        old_style,
+        new_style,
+        search_query,
+    );
 
     Row::new([
         Cell::from(number_lines(
@@ -624,27 +732,68 @@ fn unified_modified_row(
     .height((old_height + new_height) as u16)
 }
 
-fn unified_modified_lines(
+fn unified_modified_lines_with_search(
     old_text: &str,
     new_text: &str,
     old_style: Style,
     new_style: Style,
+    query: &str,
 ) -> Vec<Line<'static>> {
-    let mut lines = prefixed_lines("-", old_text, old_style);
-    lines.extend(prefixed_lines("+", new_text, new_style));
+    let mut lines = prefixed_lines_with_search("-", old_text, old_style, query);
+    lines.extend(prefixed_lines_with_search("+", new_text, new_style, query));
     lines
 }
 
-fn prefixed_lines(prefix: &'static str, text: &str, style: Style) -> Vec<Line<'static>> {
+fn prefixed_lines_with_search(
+    prefix: &'static str,
+    text: &str,
+    style: Style,
+    query: &str,
+) -> Vec<Line<'static>> {
     text.split('\n')
         .enumerate()
         .map(|(index, line)| {
-            Line::styled(
-                format!("{} {line}", if index == 0 { prefix } else { " " }),
-                style,
-            )
+            let prefix = if index == 0 { prefix } else { " " };
+            let mut spans = vec![Span::styled(format!("{prefix} "), style)];
+            spans.extend(highlighted_spans(line, style, query));
+            Line::from(spans)
         })
         .collect()
+}
+
+fn highlighted_text(text: &str, style: Style, query: &str) -> Text<'static> {
+    Text::from(
+        text.split('\n')
+            .map(|line| Line::from(highlighted_spans(line, style, query)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn highlighted_spans(text: &str, style: Style, query: &str) -> Vec<Span<'static>> {
+    if query.is_empty() {
+        return vec![Span::styled(text.to_string(), style)];
+    }
+
+    let lower_text = text.to_lowercase();
+    let lower_query = query.to_lowercase();
+    let mut spans = Vec::new();
+    let mut start = 0;
+    while let Some(relative_start) = lower_text[start..].find(&lower_query) {
+        let match_start = start + relative_start;
+        if match_start > start {
+            spans.push(Span::styled(text[start..match_start].to_string(), style));
+        }
+        let match_end = match_start + lower_query.len();
+        spans.push(Span::styled(
+            text[match_start..match_end].to_string(),
+            style.bg(SEARCH_MATCH_BG),
+        ));
+        start = match_end;
+    }
+    if start < text.len() {
+        spans.push(Span::styled(text[start..].to_string(), style));
+    }
+    spans
 }
 
 fn number_lines(
@@ -801,7 +950,13 @@ fn worktree_title(app: &App, visible_count: usize) -> String {
     } else {
         format!("{visible_count}/{}", app.worktrees.len())
     };
-    panel_title(&format!("Worktrees ({count})"), &app.worktree_filter)
+    panel_title(
+        &format!("Worktrees ({count})"),
+        &app.worktree_filter,
+        app.search
+            .as_ref()
+            .is_some_and(|search| search.focus == Focus::Worktrees),
+    )
 }
 
 fn file_title(app: &App, visible_count: usize) -> String {
@@ -810,11 +965,19 @@ fn file_title(app: &App, visible_count: usize) -> String {
     } else {
         format!("{visible_count}/{}", app.files.len())
     };
-    panel_title(&format!("Files ({count})"), &app.file_filter)
+    panel_title(
+        &format!("Files ({count})"),
+        &app.file_filter,
+        app.search
+            .as_ref()
+            .is_some_and(|search| search.focus == Focus::Files),
+    )
 }
 
-fn panel_title(title: &str, filter: &str) -> String {
-    if filter.is_empty() {
+fn panel_title(title: &str, filter: &str, searching: bool) -> String {
+    if searching && filter.is_empty() {
+        format!("{title} //")
+    } else if filter.is_empty() {
         title.to_string()
     } else {
         format!("{title} /{filter}/")
@@ -845,7 +1008,11 @@ fn search_line(focus: Focus, query: &str) -> Line<'static> {
         ),
         Span::styled(format!("/{query}"), Style::new().fg(Color::White).bold()),
         Span::styled(
-            "  Enter apply  Esc cancel",
+            if focus == Focus::Diff {
+                "  ↑/↓/Enter next  Esc cancel"
+            } else {
+                "  Enter apply  Esc cancel"
+            },
             Style::new().fg(Color::DarkGray),
         ),
     ])
@@ -924,11 +1091,11 @@ fn render_help(frame: &mut Frame) {
         help_line("Tab", "Switch change mode"),
         help_line("Space", "Expand or restore the focused panel"),
         help_line("t", "Cycle panel layout"),
-        help_line("/", "Search worktrees or files"),
         help_line("v", "Toggle hunks or full-file diff"),
         help_line("s", "Toggle split or unified diff layout"),
         help_line("w", "Toggle wrapping of long diff lines"),
         help_line("c", "Copy selected file path and line"),
+        help_line("/", "Search the focused panel"),
         help_line("r", "Refresh worktrees and changes"),
         help_line("d", "Clean up the selected worktree"),
         help_line("? / Esc", "Close this help"),
@@ -1094,10 +1261,20 @@ mod tests {
     #[test]
     fn searchable_panel_titles_include_the_active_filter() {
         assert_eq!(
-            panel_title("Files (4/4)", "some-search-word"),
+            panel_title("Files (4/4)", "some-search-word", false),
             "Files (4/4) /some-search-word/"
         );
-        assert_eq!(panel_title("Files (4)", ""), "Files (4)");
+        assert_eq!(panel_title("Files (4)", "", false), "Files (4)");
+        assert_eq!(panel_title("Files (4)", "", true), "Files (4) //");
+    }
+
+    #[test]
+    fn diff_search_highlights_all_case_insensitive_matches() {
+        let spans = highlighted_spans("Error error ERROR", Style::new().fg(Color::Red), "error");
+        assert_eq!(
+            spans.iter().filter(|span| span.style.bg.is_some()).count(),
+            3
+        );
     }
 
     #[test]
@@ -1114,6 +1291,18 @@ mod tests {
         assert_eq!(diff.x, 25);
         assert_eq!(diff.width, 75);
         assert_eq!(diff.height, 40);
+    }
+
+    #[test]
+    fn layouts_hide_worktrees_when_no_linked_worktree_exists() {
+        let area = Rect::new(0, 0, 100, 40);
+        let [worktrees, files, diff] =
+            panel_areas_for(area, Focus::Files, false, PanelLayout::Columns, false);
+
+        assert_eq!(worktrees, Rect::default());
+        assert_eq!(files.width, 25);
+        assert_eq!(diff.x, files.right());
+        assert_eq!(diff.width, 75);
     }
 
     #[test]
@@ -1153,18 +1342,19 @@ mod tests {
 
     #[test]
     fn unified_modified_rows_stack_deleted_before_added() {
-        let lines = unified_modified_lines(
+        let lines = unified_modified_lines_with_search(
             "before",
             "after",
             Style::new().fg(Color::Red),
             Style::new().fg(Color::Green),
+            "",
         );
 
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].to_string(), "- before");
         assert_eq!(lines[1].to_string(), "+ after");
-        assert_eq!(lines[0].style.fg, Some(Color::Red));
-        assert_eq!(lines[1].style.fg, Some(Color::Green));
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Green));
     }
 
     #[test]
