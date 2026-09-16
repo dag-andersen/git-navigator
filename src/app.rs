@@ -11,10 +11,13 @@ use ratatui::{
     layout::{Position, Rect},
     widgets::{ListState, TableState},
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::{
     git,
-    model::{ChangeMode, ChangedFile, Commit, DiffLayout, DiffView, FileTreeRow, Worktree},
+    model::{
+        ChangeMode, ChangedFile, Commit, DiffLayout, DiffRowKind, DiffView, FileTreeRow, Worktree,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -317,12 +320,34 @@ impl App {
         if self.modal_open() || self.search.is_some() {
             return;
         }
-        let MouseEventKind::Down(MouseButton::Left) = mouse.kind else {
-            return;
-        };
         let position = Position::new(mouse.column, mouse.row);
         let show_worktrees = self.has_linked_worktrees() || self.history_active();
 
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let Some(focus) = mouse_focus(position, areas, show_worktrees) else {
+                    return;
+                };
+                self.focus = focus;
+                let delta = if mouse.kind == MouseEventKind::ScrollUp {
+                    -3
+                } else {
+                    3
+                };
+                match focus {
+                    Focus::Worktrees => self.move_worktree(delta),
+                    Focus::Files => self.move_file(delta),
+                    Focus::Diff => self.move_diff_by(delta),
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_mouse_click(position, areas, show_worktrees);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_click(&mut self, position: Position, areas: [Rect; 3], show_worktrees: bool) {
         if show_worktrees && areas[0].contains(position) {
             let history = self.history_active();
             self.focus = Focus::Worktrees;
@@ -339,8 +364,32 @@ impl App {
                 self.select_file_row(row);
             }
         } else if areas[2].contains(position) {
+            let diff_rows_visible = self.expanded || self.focus == Focus::Diff;
             self.focus = Focus::Diff;
+            if diff_rows_visible && let Some(row) = self.diff_row_at_position(position, areas[2]) {
+                self.select_diff_row(row);
+            }
         }
+    }
+
+    fn diff_row_at_position(&self, position: Position, area: Rect) -> Option<usize> {
+        let file = self.selected_file()?;
+        let effective_layout = match file.status {
+            crate::model::FileStatus::Added
+            | crate::model::FileStatus::Deleted
+            | crate::model::FileStatus::Untracked => DiffLayout::Unified,
+            crate::model::FileStatus::Modified
+            | crate::model::FileStatus::Renamed
+            | crate::model::FileStatus::Conflicted => self.diff_layout,
+        };
+        diff_row_at_position(
+            file,
+            effective_layout,
+            self.line_wrap,
+            self.diff_state.offset(),
+            position,
+            area,
+        )
     }
 
     fn list_index(&self, position: Position, area: Rect, history: bool) -> Option<usize> {
@@ -1236,6 +1285,135 @@ fn moved_selection(selected: Option<usize>, length: usize, delta: isize) -> Opti
 
 fn worktree_index(worktrees: &[Worktree], path: &Path) -> Option<usize> {
     worktrees.iter().position(|worktree| worktree.path == path)
+}
+
+fn mouse_focus(position: Position, areas: [Rect; 3], show_worktrees: bool) -> Option<Focus> {
+    if show_worktrees && areas[0].contains(position) {
+        Some(Focus::Worktrees)
+    } else if areas[1].contains(position) {
+        Some(Focus::Files)
+    } else if areas[2].contains(position) {
+        Some(Focus::Diff)
+    } else {
+        None
+    }
+}
+
+fn diff_row_at_position(
+    file: &ChangedFile,
+    layout: DiffLayout,
+    line_wrap: bool,
+    offset: usize,
+    position: Position,
+    area: Rect,
+) -> Option<usize> {
+    let rows_area_top = area.y.saturating_add(3);
+    if position.y < rows_area_top {
+        return None;
+    }
+
+    let width = diff_content_width(area, layout);
+    let mut y = rows_area_top;
+    let mut global_row = 0;
+    for hunk in &file.hunks {
+        if global_row >= offset {
+            if position.y < y.saturating_add(1) {
+                return Some(global_row);
+            }
+            y = y.saturating_add(1);
+        }
+        global_row += 1;
+        if hunk.collapsed {
+            continue;
+        }
+        for row in &hunk.rows {
+            let height = diff_row_height(row, layout, line_wrap, width);
+            if global_row >= offset {
+                if position.y < y.saturating_add(height) {
+                    return Some(global_row);
+                }
+                y = y.saturating_add(height);
+            }
+            global_row += 1;
+        }
+    }
+    None
+}
+
+fn diff_row_height(
+    row: &crate::model::DiffRow,
+    layout: DiffLayout,
+    line_wrap: bool,
+    width: usize,
+) -> u16 {
+    let text_width = match layout {
+        DiffLayout::Split => width,
+        DiffLayout::Unified => width.saturating_sub(2).max(1),
+    };
+    let line_count = |text: Option<&str>, width: usize| {
+        if !line_wrap {
+            return 1;
+        }
+        expand_tabs(text.unwrap_or_default(), 4)
+            .split('\n')
+            .map(|line| wrapped_line_count(line, width))
+            .sum::<usize>()
+            .max(1) as u16
+    };
+    match layout {
+        DiffLayout::Split => line_count(row.old_text.as_deref(), text_width)
+            .max(line_count(row.new_text.as_deref(), text_width)),
+        DiffLayout::Unified => match row.kind {
+            DiffRowKind::Modified => line_count(row.old_text.as_deref(), text_width)
+                .saturating_add(line_count(row.new_text.as_deref(), text_width)),
+            _ => line_count(
+                row.new_text.as_deref().or(row.old_text.as_deref()),
+                text_width,
+            ),
+        },
+    }
+}
+
+fn diff_content_width(area: Rect, layout: DiffLayout) -> usize {
+    let available = area.width.saturating_sub(2 + 10 + 3 + 1);
+    match layout {
+        DiffLayout::Split => usize::from(available / 2).max(1),
+        DiffLayout::Unified => usize::from(available).max(1),
+    }
+}
+
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    let mut lines = 0;
+    for line in text.split('\n') {
+        let mut current_width = 0;
+        let mut line_count = 1;
+        for character in line.chars() {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if current_width > 0 && current_width + character_width > width {
+                line_count += 1;
+                current_width = 0;
+            }
+            current_width += character_width;
+        }
+        lines += line_count;
+    }
+    lines.max(1)
+}
+
+fn expand_tabs(text: &str, tab_width: usize) -> String {
+    let mut expanded = String::with_capacity(text.len());
+    let mut column = 0;
+    for character in text.chars() {
+        if character == '\t' {
+            let spaces = tab_width - column % tab_width;
+            expanded.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            expanded.push(character);
+            column += UnicodeWidthChar::width(character).unwrap_or(0);
+        }
+    }
+    expanded
 }
 
 fn history_selection_after_refresh(
@@ -2214,6 +2392,73 @@ mod tests {
             history_selection_after_refresh(false, Some("rewritten"), &commits),
             Some(0)
         );
+    }
+
+    #[test]
+    fn mouse_scroll_moves_the_focused_diff() {
+        let mut app = test_app();
+        app.files = vec![ChangedFile {
+            path: PathBuf::from("src/main.rs"),
+            old_path: None,
+            status: FileStatus::Modified,
+            additions: 2,
+            deletions: 2,
+            hunks: vec![DiffHunk {
+                header: "@@".into(),
+                kind: HunkKind::Combined,
+                collapsed: false,
+                rows: vec![
+                    DiffRow {
+                        old_number: Some(1),
+                        new_number: Some(1),
+                        old_text: Some("one".into()),
+                        new_text: Some("ONE".into()),
+                        kind: DiffRowKind::Modified,
+                    },
+                    DiffRow {
+                        old_number: Some(2),
+                        new_number: Some(2),
+                        old_text: Some("two".into()),
+                        new_text: Some("TWO".into()),
+                        kind: DiffRowKind::Modified,
+                    },
+                    DiffRow {
+                        old_number: Some(3),
+                        new_number: Some(3),
+                        old_text: Some("three".into()),
+                        new_text: Some("THREE".into()),
+                        kind: DiffRowKind::Modified,
+                    },
+                ],
+            }],
+            binary: false,
+        }];
+        app.file_tree = vec![FileTreeRow {
+            label: "└── main.rs".into(),
+            path: PathBuf::from("src/main.rs"),
+            file_index: Some(0),
+        }];
+        app.file_state.select(Some(0));
+        app.diff_state.select(Some(0));
+        app.focus = Focus::Diff;
+        let areas = [
+            Rect::new(0, 0, 10, 10),
+            Rect::new(10, 0, 10, 10),
+            Rect::new(20, 0, 40, 10),
+        ];
+
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 25,
+                row: 5,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            },
+            areas,
+        );
+
+        assert_eq!(app.focus, Focus::Diff);
+        assert_eq!(app.diff_state.selected(), Some(3));
     }
 
     #[test]

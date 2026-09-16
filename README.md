@@ -67,7 +67,7 @@ The application is organized around three panels:
 - **Files** - navigate changed files in a folder tree
 - **Diff** - inspect the selected file and line-level changes
 
-Selecting an item with the keyboard or a mouse click updates the panels to its right. Directory rows in the Files tree are visual grouping rows and are skipped during keyboard navigation.
+Selecting an item with the keyboard or a mouse click updates the panels to its right. Click a diff row to select it, and use the mouse wheel over any panel to scroll or navigate. Directory rows in the Files tree are visual grouping rows and are skipped during keyboard navigation.
 
 ### Panel layouts
 
@@ -292,6 +292,15 @@ Refresh attempts to preserve:
 - Historical commit selection by full commit hash
 
 ## Keyboard reference
+
+## Mouse reference
+
+| Input | Action |
+| --- | --- |
+| Left click a Worktree or History entry | Select the entry |
+| Left click a File entry | Select the file |
+| Left click a Diff row or hunk header | Select the row or hunk |
+| Scroll wheel over a panel | Scroll or navigate that panel |
 
 | Key | Action |
 | --- | --- |
