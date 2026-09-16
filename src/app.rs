@@ -7,7 +7,8 @@ use std::{
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent},
+    crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
+    layout::{Position, Rect},
     widgets::{ListState, TableState},
 };
 
@@ -136,6 +137,7 @@ pub struct App {
     pub files: Vec<ChangedFile>,
     pub file_tree: Vec<FileTreeRow>,
     pub worktree_state: ListState,
+    pub history_state: ListState,
     pub file_state: ListState,
     pub diff_state: TableState,
     pub show_help: bool,
@@ -189,6 +191,8 @@ impl App {
 
         let mut worktree_state = ListState::default();
         worktree_state.select(Some(selected_worktree));
+        let mut history_state = ListState::default();
+        history_state.select(Some(0));
         let file_tree = build_file_tree(&files);
         let mut file_state = ListState::default();
         file_state.select(first_file_row(&file_tree));
@@ -222,6 +226,7 @@ impl App {
             files,
             file_tree,
             worktree_state,
+            history_state,
             file_state,
             diff_state,
             show_help: false,
@@ -306,6 +311,105 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent, areas: [Rect; 3]) {
+        if self.modal_open() || self.search.is_some() {
+            return;
+        }
+        let MouseEventKind::Down(MouseButton::Left) = mouse.kind else {
+            return;
+        };
+        let position = Position::new(mouse.column, mouse.row);
+        let show_worktrees = self.has_linked_worktrees() || self.history_active();
+
+        if show_worktrees && areas[0].contains(position) {
+            let history = self.history_active();
+            self.focus = Focus::Worktrees;
+            if let Some(index) = self.list_index(position, areas[0], history) {
+                if history {
+                    self.select_commit(index);
+                } else {
+                    self.select_worktree(index);
+                }
+            }
+        } else if areas[1].contains(position) {
+            self.focus = Focus::Files;
+            if let Some(row) = self.list_index(position, areas[1], false) {
+                self.select_file_row(row);
+            }
+        } else if areas[2].contains(position) {
+            self.focus = Focus::Diff;
+        }
+    }
+
+    fn list_index(&self, position: Position, area: Rect, history: bool) -> Option<usize> {
+        let content_top = area.y.saturating_add(1);
+        if position.y < content_top {
+            return None;
+        }
+        let row = usize::from(position.y - content_top);
+        let item_height = if history || self.focus != Focus::Worktrees {
+            1
+        } else {
+            2
+        };
+        Some(
+            row / item_height
+                + if history {
+                    self.history_state.offset()
+                } else if self.focus == Focus::Worktrees {
+                    self.worktree_state.offset()
+                } else {
+                    self.file_state.offset()
+                },
+        )
+    }
+
+    fn select_worktree(&mut self, visible_position: usize) {
+        let visible = self.visible_worktree_indices();
+        let Some(index) = visible.get(visible_position).copied() else {
+            return;
+        };
+        if Some(index) == self.worktree_state.selected() {
+            return;
+        }
+        self.worktree_state.select(Some(index));
+        self.reload_files(None);
+    }
+
+    fn select_commit(&mut self, visible_position: usize) {
+        if visible_position > self.commits.len() {
+            return;
+        }
+        let next = Some(visible_position);
+        if self.selected_commit == next {
+            return;
+        }
+        self.selected_commit = next;
+        self.history_state.select(next);
+        if visible_position == 0 {
+            let preferred = self.history_preferred_file.clone();
+            self.reload_files(preferred.as_deref());
+        } else {
+            self.reload_selected_commit();
+        }
+    }
+
+    fn select_file_row(&mut self, visible_position: usize) {
+        let visible = self.visible_file_rows();
+        let Some(row) = visible.get(visible_position).copied() else {
+            return;
+        };
+        if self.file_tree[row].is_directory() || Some(row) == self.file_state.selected() {
+            return;
+        }
+        self.file_state.select(Some(row));
+        if self.history_active() {
+            self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
+        }
+        self.diff_state
+            .select(first_diff_row(&self.files, &self.file_tree, Some(row)));
     }
 
     pub fn apply_initial_layout(&mut self, terminal_width: u16, threshold: u16) {
@@ -959,6 +1063,7 @@ impl App {
             return;
         }
         self.selected_commit = next;
+        self.history_state.select(next);
         if next == Some(0) {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
@@ -2205,6 +2310,7 @@ mod tests {
             files: vec![],
             file_tree: vec![],
             worktree_state: ListState::default(),
+            history_state: ListState::default(),
             file_state: ListState::default(),
             diff_state: TableState::default(),
             show_help: false,

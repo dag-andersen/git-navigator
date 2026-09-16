@@ -99,16 +99,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_history(frame: &mut Frame, app: &App, area: Rect) {
+pub fn interaction_areas(area: Rect, app: &mut App) -> [Rect; 3] {
+    app.apply_initial_layout(area.width, COMPACT_LAYOUT_THRESHOLD);
+    let [_header, body, _footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    panel_areas_for(
+        body,
+        app.focus,
+        app.expanded,
+        app.panel_layout,
+        app.has_linked_worktrees() || app.history_active(),
+    )
+}
+
+fn render_history(frame: &mut Frame, app: &mut App, area: Rect) {
     let items = history_items(app);
     let title = format!("History ({})", app.commits.len() + 1);
     let list = List::new(items)
         .block(pane_block(&title, app.focus == Focus::Worktrees))
         .highlight_style(SELECTED)
         .highlight_symbol("› ");
-    let mut state = ratatui::widgets::ListState::default();
+    let mut state = app.history_state;
     state.select(app.selected_commit);
     frame.render_stateful_widget(list, area, &mut state);
+    *app.history_state.offset_mut() = state.offset();
 }
 
 fn history_items(app: &App) -> Vec<ListItem<'static>> {
@@ -1093,6 +1111,8 @@ fn search_line(focus: Focus, query: &str) -> Line<'static> {
 
 fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
     let mut spans = vec![
+        Span::styled("Mouse", Style::new().fg(Color::Cyan)),
+        Span::raw(" click items  "),
         Span::styled("←/→", Style::new().fg(Color::Cyan)),
         Span::raw(" panes  "),
         Span::styled("↑/↓", Style::new().fg(Color::Cyan)),
@@ -1564,6 +1584,7 @@ mod tests {
                 file_index: Some(0),
             }],
             worktree_state,
+            history_state: ListState::default(),
             file_state,
             diff_state,
             show_help: false,

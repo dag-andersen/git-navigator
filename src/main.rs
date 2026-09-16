@@ -6,13 +6,16 @@ mod ui;
 mod watcher;
 
 use std::{
-    io::IsTerminal,
+    io::{IsTerminal, stdout},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    execute,
+};
 
 use crate::{app::App, cli::Cli, watcher::AutoRefresh};
 
@@ -36,33 +39,50 @@ fn main() -> Result<()> {
         app.selected_worktree()
             .map(|worktree| worktree.path.as_path()),
     );
-    ratatui::run(|terminal| {
-        loop {
-            let now = Instant::now();
-            if auto_refresh.should_refresh(now) && !app.modal_open() {
-                app.refresh();
-                auto_refresh.mark_refreshed(now);
-                auto_refresh.watch_worktree(
-                    app.selected_worktree()
-                        .map(|worktree| worktree.path.as_path()),
-                    now,
-                );
-            }
-            terminal.draw(|frame| ui::render(frame, &mut app))?;
-            if event::poll(Duration::from_millis(100))?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                if app.handle_key(key) {
-                    return Ok::<(), std::io::Error>(());
-                }
-                auto_refresh.watch_worktree(
-                    app.selected_worktree()
-                        .map(|worktree| worktree.path.as_path()),
-                    Instant::now(),
-                );
-            }
+    let mut terminal = ratatui::init();
+    let result = execute!(stdout(), EnableMouseCapture)
+        .and_then(|()| run_app(&mut terminal, &mut app, &mut auto_refresh));
+    let cleanup_result = execute!(stdout(), DisableMouseCapture);
+    ratatui::restore();
+
+    result.and(cleanup_result).context("terminal error")
+}
+
+fn run_app(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    auto_refresh: &mut AutoRefresh,
+) -> std::io::Result<()> {
+    loop {
+        let now = Instant::now();
+        if auto_refresh.should_refresh(now) && !app.modal_open() {
+            app.refresh();
+            auto_refresh.mark_refreshed(now);
+            auto_refresh.watch_worktree(
+                app.selected_worktree()
+                    .map(|worktree| worktree.path.as_path()),
+                now,
+            );
         }
-    })
-    .context("terminal error")
+        let size = terminal.size()?;
+        let areas = ui::interaction_areas(
+            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+            app,
+        );
+        terminal.draw(|frame| ui::render(frame, app))?;
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press && app.handle_key(key) => {
+                    return Ok(());
+                }
+                Event::Mouse(mouse) => app.handle_mouse(mouse, areas),
+                _ => {}
+            }
+            auto_refresh.watch_worktree(
+                app.selected_worktree()
+                    .map(|worktree| worktree.path.as_path()),
+                Instant::now(),
+            );
+        }
+    }
 }

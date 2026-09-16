@@ -17,6 +17,7 @@ It is written in Rust with [Ratatui](https://ratatui.rs/).
 - Switch between concise Git hunks and full-file diffs
 - Search Worktrees and Files with live fuzzy filtering
 - Search Diff contents with case-insensitive substring matching
+- Select Worktrees, History entries, and Files with mouse clicks
 - Highlight every Diff search match and show the current match position
 - Copy an absolute `path:line` location from the selected Diff row
 - Automatically refresh when files, commits, or worktrees change
@@ -66,7 +67,7 @@ The application is organized around three panels:
 - **Files** - navigate changed files in a folder tree
 - **Diff** - inspect the selected file and line-level changes
 
-Selecting an item updates the panels to its right. Directory rows in the Files tree are visual grouping rows and are skipped during keyboard navigation.
+Selecting an item with the keyboard or a mouse click updates the panels to its right. Directory rows in the Files tree are visual grouping rows and are skipped during keyboard navigation.
 
 ### Panel layouts
 
