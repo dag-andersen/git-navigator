@@ -146,6 +146,7 @@ pub struct App {
     pub search: Option<SearchState>,
     pub worktree_panel: WorktreePanel,
     pub commits: Vec<Commit>,
+    pub history_base_commit: Option<String>,
     pub selected_commit: Option<usize>,
     pub history_preferred_file: Option<PathBuf>,
 }
@@ -179,6 +180,11 @@ impl App {
                     worktrees[selected_worktree].path.display()
                 )
             })?
+        };
+        let history_base_commit = if has_linked_worktrees {
+            None
+        } else {
+            git::history_base_commit(&worktrees[selected_worktree].path, &base).ok()
         };
 
         let mut worktree_state = ListState::default();
@@ -230,6 +236,7 @@ impl App {
                 WorktreePanel::History
             },
             commits,
+            history_base_commit,
             selected_commit: (!has_linked_worktrees).then_some(0),
             history_preferred_file,
         })
@@ -573,9 +580,16 @@ impl App {
                     .or((!self.worktrees.is_empty()).then_some(0));
                 self.worktree_state.select(selected);
                 if self.history_active() {
-                    if let Some(worktree) = self.selected_worktree() {
-                        match git::commit_history(&worktree.path) {
-                            Ok(commits) => self.commits = commits,
+                    if let Some(worktree_path) = self
+                        .selected_worktree()
+                        .map(|worktree| worktree.path.clone())
+                    {
+                        match git::commit_history(&worktree_path) {
+                            Ok(commits) => {
+                                self.commits = commits;
+                                self.history_base_commit =
+                                    git::history_base_commit(&worktree_path, &self.base).ok();
+                            }
                             Err(error) => {
                                 self.set_error(format!("Refresh failed: {error:#}"));
                                 return;
@@ -913,14 +927,19 @@ impl App {
             self.reload_files(preferred.as_deref());
             return;
         }
-        let Some(worktree) = self.selected_worktree() else {
+        let Some(worktree_path) = self
+            .selected_worktree()
+            .map(|worktree| worktree.path.clone())
+        else {
             return;
         };
-        match git::commit_history(&worktree.path) {
+        match git::commit_history(&worktree_path) {
             Ok(commits) => {
                 self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
                 self.focus = Focus::Worktrees;
                 self.commits = commits;
+                self.history_base_commit =
+                    git::history_base_commit(&worktree_path, &self.base).ok();
                 self.selected_commit = Some(0);
                 self.worktree_panel = WorktreePanel::History;
                 let preferred = self.history_preferred_file.clone();
@@ -2196,6 +2215,7 @@ mod tests {
             search: None,
             worktree_panel: WorktreePanel::Worktrees,
             commits: Vec::new(),
+            history_base_commit: None,
             selected_commit: None,
             history_preferred_file: None,
         }

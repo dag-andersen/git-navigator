@@ -100,20 +100,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_history(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = std::iter::once(ListItem::new(Line::from(vec![
-        Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
-        Span::raw("Uncommitted changes"),
-    ])))
-    .chain(app.commits.iter().map(|commit| {
-        ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{} ", commit.short_hash),
-                Style::new().fg(Color::Cyan),
-            ),
-            Span::raw(commit.subject.clone()),
-        ]))
-    }))
-    .collect();
+    let items = history_items(app);
     let title = format!("History ({})", app.commits.len() + 1);
     let list = List::new(items)
         .block(pane_block(&title, app.focus == Focus::Worktrees))
@@ -122,6 +109,53 @@ fn render_history(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ratatui::widgets::ListState::default();
     state.select(app.selected_commit);
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn history_items(app: &App) -> Vec<ListItem<'static>> {
+    let base_index = app
+        .history_base_commit
+        .as_deref()
+        .and_then(|hash| app.commits.iter().position(|commit| commit.hash == hash));
+    let mut items = Vec::with_capacity(app.commits.len() + 2);
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
+        Span::raw("Uncommitted changes"),
+    ])));
+
+    for (index, commit) in app.commits.iter().enumerate() {
+        let commit_line = Line::from(vec![
+            Span::styled(
+                format!("{} ", commit.short_hash),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw(commit.subject.clone()),
+        ]);
+        let is_oldest_shown_commit = index + 1 == app.commits.len();
+        if base_index == Some(index) {
+            items.push(ListItem::new(vec![
+                Line::styled(
+                    format!("── base branch: {} ──", app.base),
+                    Style::new().fg(Color::DarkGray).bold(),
+                ),
+                commit_line,
+            ]));
+        } else if is_oldest_shown_commit && app.history_base_commit.is_some() {
+            items.push(ListItem::new(vec![
+                Line::styled(
+                    format!(
+                        "── base branch: {} is older than shown history ──",
+                        app.base
+                    ),
+                    Style::new().fg(Color::DarkGray).bold(),
+                ),
+                commit_line,
+            ]));
+        } else {
+            items.push(ListItem::new(commit_line));
+        }
+    }
+
+    items
 }
 
 #[cfg(test)]
@@ -1540,6 +1574,7 @@ mod tests {
             search: None,
             worktree_panel: crate::app::WorktreePanel::Worktrees,
             commits: Vec::new(),
+            history_base_commit: None,
             selected_commit: None,
             history_preferred_file: None,
         };
@@ -1596,5 +1631,25 @@ mod tests {
         assert_eq!(scrollbar_position(0, 5, 3), 0);
         assert_eq!(scrollbar_position(1, 5, 3), 2);
         assert_eq!(scrollbar_position(2, 5, 3), 4);
+
+        app.worktree_panel = crate::app::WorktreePanel::History;
+        app.commits = vec![crate::model::Commit {
+            hash: "base-hash".into(),
+            short_hash: "base-has".into(),
+            subject: "base commit".into(),
+        }];
+        app.history_base_commit = Some("base-hash".into());
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("history should render");
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("base branch: main"));
+        assert!(rendered.contains("base commit"));
     }
 }

@@ -97,6 +97,13 @@ pub fn commit_history(worktree: &Path) -> Result<Vec<Commit>> {
         .collect())
 }
 
+pub fn history_base_commit(worktree: &Path, base: &str) -> Result<String> {
+    let base_ref = resolve_base_ref(worktree, base)?;
+    Ok(git_text(worktree, &["merge-base", "HEAD", &base_ref])?
+        .trim()
+        .to_string())
+}
+
 pub fn load_commit_changes(
     worktree: &Path,
     commit: &Commit,
