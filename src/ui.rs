@@ -100,7 +100,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-pub fn render_snapshot(app: &mut App, width: u16, height: u16) -> String {
+pub fn render_snapshot(app: &mut App, width: u16, height: u16, ansi: bool) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("snapshot terminal should be created");
     terminal
@@ -111,11 +111,63 @@ pub fn render_snapshot(app: &mut App, width: u16, height: u16) -> String {
     (0..height)
         .map(|y| {
             (0..width)
-                .map(|x| buffer[(x, y)].symbol())
+                .map(|x| snapshot_cell(&buffer[(x, y)], ansi))
                 .collect::<String>()
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn snapshot_cell(cell: &ratatui::buffer::Cell, ansi: bool) -> String {
+    if !ansi {
+        return cell.symbol().to_string();
+    }
+
+    let mut codes = Vec::new();
+    if cell.modifier.contains(Modifier::BOLD) {
+        codes.push("1".to_string());
+    }
+    if cell.modifier.contains(Modifier::ITALIC) {
+        codes.push("3".to_string());
+    }
+    codes.push(color_code(cell.fg, false));
+    if cell.bg != Color::Reset {
+        codes.push(color_code(cell.bg, true));
+    }
+    format!("\x1b[{}m{}\x1b[0m", codes.join(";"), cell.symbol())
+}
+
+fn color_code(color: Color, background: bool) -> String {
+    let offset = if background { 10 } else { 0 };
+    match color {
+        Color::Reset => "39".into(),
+        Color::Black => format!("{}", 30 + offset),
+        Color::Red => format!("{}", 31 + offset),
+        Color::Green => format!("{}", 32 + offset),
+        Color::Yellow => format!("{}", 33 + offset),
+        Color::Blue => format!("{}", 34 + offset),
+        Color::Magenta => format!("{}", 35 + offset),
+        Color::Cyan => format!("{}", 36 + offset),
+        Color::Gray => format!("{}", 37 + offset),
+        Color::DarkGray => format!("{}", 90 + offset),
+        Color::LightRed => format!("{}", 91 + offset),
+        Color::LightGreen => format!("{}", 92 + offset),
+        Color::LightYellow => format!("{}", 93 + offset),
+        Color::LightBlue => format!("{}", 94 + offset),
+        Color::LightMagenta => format!("{}", 95 + offset),
+        Color::LightCyan => format!("{}", 96 + offset),
+        Color::White => format!("{}", 97 + offset),
+        Color::Rgb(red, green, blue) => {
+            format!(
+                "{};2;{};{};{}",
+                if background { 48 } else { 38 },
+                red,
+                green,
+                blue
+            )
+        }
+        Color::Indexed(index) => format!("{};5;{}", if background { 48 } else { 38 }, index),
+    }
 }
 
 pub fn interaction_areas(area: Rect, app: &mut App) -> [Rect; 3] {
@@ -143,66 +195,96 @@ fn render_history(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_style(SELECTED)
         .highlight_symbol("› ");
     let mut state = app.history_state;
-    state.select(app.selected_commit);
+    state.select(history_visual_index(app, app.selected_commit));
     frame.render_stateful_widget(list, area, &mut state);
     *app.history_state.offset_mut() = state.offset();
 }
 
 fn history_items(app: &App) -> Vec<ListItem<'static>> {
-    let base_index = app
-        .history_base_commit
-        .as_deref()
-        .and_then(|hash| app.commits.iter().position(|commit| commit.hash == hash));
     let mut items = Vec::with_capacity(app.commits.len() + 2);
     items.push(ListItem::new(Line::from(vec![
-        history_marker(history_wip_is_in_branch_diff(app)),
+        graph_node(history_wip_is_in_branch_diff(app)),
         Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
         Span::raw("Uncommitted changes"),
     ])));
 
     for (index, commit) in app.commits.iter().enumerate() {
-        let commit_line = Line::from(vec![
-            history_marker(history_commit_is_in_branch_diff(app, index)),
+        let active = history_commit_is_in_branch_diff(app, index);
+        let graph_lines = commit
+            .graph
+            .iter()
+            .take(commit.graph.len().saturating_sub(1))
+            .map(|graph| graph_line(graph, active))
+            .collect::<Vec<_>>();
+        items.extend(graph_lines.into_iter().map(ListItem::new));
+        let graph = graph_line(
+            commit.graph.last().map(String::as_str).unwrap_or("●"),
+            active,
+        );
+        let mut commit_line = graph;
+        commit_line.spans.extend([
             Span::styled(
                 format!("{} ", commit.short_hash),
                 Style::new().fg(Color::Cyan),
             ),
             Span::raw(commit.subject.clone()),
         ]);
-        let is_oldest_shown_commit = index + 1 == app.commits.len();
-        if base_index == Some(index) {
-            items.push(ListItem::new(vec![
-                Line::styled(
-                    format!("── base branch: {} ──", app.base),
-                    Style::new().fg(Color::DarkGray).bold(),
-                ),
-                commit_line,
-            ]));
-        } else if is_oldest_shown_commit && app.history_base_commit.is_some() {
-            items.push(ListItem::new(vec![
-                Line::styled(
-                    format!(
-                        "── base branch: {} is older than shown history ──",
-                        app.base
-                    ),
-                    Style::new().fg(Color::DarkGray).bold(),
-                ),
-                commit_line,
-            ]));
-        } else {
-            items.push(ListItem::new(commit_line));
-        }
+        items.push(ListItem::new(commit_line));
     }
 
     items
 }
 
-fn history_marker(active: bool) -> Span<'static> {
+pub(crate) fn history_visual_index(app: &App, selected_commit: Option<usize>) -> Option<usize> {
+    let target = selected_commit?;
+    let mut visual_index = 1;
+    if target == 0 {
+        return Some(0);
+    }
+
+    for (index, commit) in app.commits.iter().enumerate() {
+        if target == index + 1 {
+            return Some(visual_index + commit.graph.len().saturating_sub(1));
+        }
+        visual_index += commit.graph.len();
+    }
+
+    None
+}
+
+fn graph_node(active: bool) -> Span<'static> {
     if active {
         Span::styled("● ", Style::new().fg(Color::LightGreen).bold())
     } else {
-        Span::raw("  ")
+        Span::styled("● ", Style::new().fg(Color::Cyan))
     }
+}
+
+fn graph_line(graph: &str, active: bool) -> Line<'static> {
+    let mut spans = Vec::new();
+    let graph_style = Style::new().fg(if active {
+        Color::LightGreen
+    } else {
+        Color::DarkGray
+    });
+    for character in graph.chars() {
+        let style = if character == '●' {
+            Style::new()
+                .fg(if active {
+                    Color::LightGreen
+                } else {
+                    Color::Cyan
+                })
+                .bold()
+        } else {
+            graph_style
+        };
+        spans.push(Span::styled(character.to_string(), style));
+    }
+    spans.push(Span::raw(
+        " ".repeat(4usize.saturating_sub(graph.chars().count())),
+    ));
+    Line::from(spans)
 }
 
 fn history_wip_is_in_branch_diff(app: &App) -> bool {
@@ -1719,6 +1801,7 @@ mod tests {
             hash: "base-hash".into(),
             short_hash: "base-has".into(),
             subject: "base commit".into(),
+            graph: vec!["●".into()],
         }];
         app.history_base_commit = Some("base-hash".into());
         terminal
@@ -1731,8 +1814,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(rendered.contains("base branch: main"));
-        assert!(rendered.contains("base commit"));
+        assert!(rendered.contains("base-has"));
+        assert!(rendered.contains("base-has"));
     }
 
     #[test]
@@ -1742,21 +1825,25 @@ mod tests {
                 hash: "head".into(),
                 short_hash: "head".into(),
                 subject: "head commit".into(),
+                graph: vec!["●".into()],
             },
             crate::model::Commit {
                 hash: "middle".into(),
                 short_hash: "middle".into(),
                 subject: "middle commit".into(),
+                graph: vec!["│".into(), "●".into()],
             },
             crate::model::Commit {
                 hash: "base".into(),
                 short_hash: "base".into(),
                 subject: "base commit".into(),
+                graph: vec!["●".into()],
             },
             crate::model::Commit {
                 hash: "older".into(),
                 short_hash: "older".into(),
                 subject: "older commit".into(),
+                graph: vec!["●".into()],
             },
         ];
         let mut app = App {

@@ -398,16 +398,14 @@ impl App {
             return None;
         }
         let row = usize::from(position.y - content_top);
-        let item_height = if history || self.focus != Focus::Worktrees {
-            1
-        } else {
-            2
-        };
+        if history {
+            return history_list_index(self, row);
+        }
+
+        let item_height = if self.focus == Focus::Worktrees { 2 } else { 1 };
         Some(
             row / item_height
-                + if history {
-                    self.history_state.offset()
-                } else if self.focus == Focus::Worktrees {
+                + if self.focus == Focus::Worktrees {
                     self.worktree_state.offset()
                 } else {
                     self.file_state.offset()
@@ -436,7 +434,8 @@ impl App {
             return;
         }
         self.selected_commit = next;
-        self.history_state.select(next);
+        self.history_state
+            .select(crate::ui::history_visual_index(self, next));
         if visible_position == 0 {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
@@ -518,7 +517,8 @@ impl App {
                 ),
                 None => Some(0),
             };
-            self.history_state.select(self.selected_commit);
+            self.history_state
+                .select(crate::ui::history_visual_index(self, self.selected_commit));
             if self.history_commit_selected() {
                 self.reload_selected_commit();
             } else {
@@ -1156,7 +1156,8 @@ impl App {
             return;
         }
         self.selected_commit = next;
-        self.history_state.select(next);
+        self.history_state
+            .select(crate::ui::history_visual_index(self, next));
         if next == Some(0) {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
@@ -1474,6 +1475,24 @@ fn history_selection_after_refresh(
         .and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
         .map(|index| index + 1)
         .or(Some(0))
+}
+
+fn history_list_index(app: &App, visible_row: usize) -> Option<usize> {
+    let target_row = visible_row + app.history_state.offset();
+    if target_row == 0 {
+        return Some(0);
+    }
+
+    let mut row = 1;
+    for (index, commit) in app.commits.iter().enumerate() {
+        row += commit.graph.len().saturating_sub(1);
+        if target_row == row {
+            return Some(index + 1);
+        }
+        row += 1;
+    }
+
+    None
 }
 
 fn first_diff_row(
@@ -2375,6 +2394,7 @@ mod tests {
             hash: "1234567890abcdef".into(),
             short_hash: "12345678".into(),
             subject: "commit".into(),
+            graph: vec!["●".into()],
         }];
         app.selected_commit = Some(1);
 
@@ -2418,11 +2438,13 @@ mod tests {
                 hash: "new".into(),
                 short_hash: "new".into(),
                 subject: "new commit".into(),
+                graph: vec!["●".into()],
             },
             Commit {
                 hash: "selected".into(),
                 short_hash: "selected".into(),
                 subject: "selected commit".into(),
+                graph: vec!["●".into()],
             },
         ];
 
@@ -2438,6 +2460,34 @@ mod tests {
             history_selection_after_refresh(false, Some("rewritten"), &commits),
             Some(0)
         );
+    }
+
+    #[test]
+    fn history_clicks_skip_graph_continuation_rows() {
+        let mut app = test_app();
+        app.worktree_panel = WorktreePanel::History;
+        app.commits = vec![
+            Commit {
+                hash: "first".into(),
+                short_hash: "first".into(),
+                subject: "first".into(),
+                graph: vec!["●".into()],
+            },
+            Commit {
+                hash: "second".into(),
+                short_hash: "second".into(),
+                subject: "second".into(),
+                graph: vec!["│ ●".into(), "│╱".into()],
+            },
+        ];
+        app.history_state.select(Some(0));
+
+        let area = Rect::new(0, 0, 50, 10);
+        assert_eq!(app.list_index(Position::new(1, 1), area, true), Some(0));
+        assert_eq!(app.list_index(Position::new(1, 2), area, true), Some(1));
+        assert_eq!(app.list_index(Position::new(1, 3), area, true), None);
+        assert_eq!(app.list_index(Position::new(1, 4), area, true), Some(2));
+        assert_eq!(app.list_index(Position::new(1, 6), area, true), None);
     }
 
     #[test]

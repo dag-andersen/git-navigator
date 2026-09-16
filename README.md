@@ -60,10 +60,20 @@ git-navigator .
 For deterministic AI or test inspection, render a fixed-size text snapshot instead of opening the interactive TUI:
 
 ```shell
-git-navigator . --render --history --mode branch --commit <short-or-full-hash> --width 120 --height 40
+git-navigator . --render --focus history --mode branch --commit <short-or-full-hash> --width 120 --height 40
 ```
 
-The command writes the terminal cell contents to standard output, so an AI or test can inspect the complete screen without sending keyboard input. Omit `--commit` to render WIP, or omit `--history` to render the normal initial layout. Use `--mode uncommitted` or `--mode branch` to select the comparison mode. When a commit is selected, the Files and Diff panels show that commit too.
+The command writes the terminal cell contents to standard output, so an AI or test can inspect the complete screen without sending keyboard input. Add `--ansi` to preserve colors and text modifiers. Omit `--commit` to render WIP, or omit `--history` to render the normal initial layout. Use `--mode uncommitted` or `--mode branch` to select the comparison mode. When a commit is selected, the Files and Diff panels show that commit too.
+
+ Use `--focus` for interactive and rendered views. It focuses and expands the requested panel:
+
+```shell
+git-navigator . --focus history
+git-navigator . --focus files
+git-navigator . --focus diff
+git-navigator . --focus worktrees
+git-navigator . --render --focus history --ansi --width 161 --height 50
+```
 
 The comparison base defaults to `main`. It can be changed with the base option when a repository uses another primary branch.
 

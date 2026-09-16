@@ -18,8 +18,8 @@ use ratatui::crossterm::{
 };
 
 use crate::{
-    app::App,
-    cli::{Cli, RenderMode},
+    app::{App, Focus, WorktreePanel},
+    cli::{Cli, RenderMode, StartupFocus},
     watcher::AutoRefresh,
 };
 
@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         bail!("{} is not a directory", directory.display());
     }
 
-    let mut app = App::load(directory, cli.base)?;
+    let mut app = App::load(directory, cli.base.clone())?;
     if cli.render {
         if cli.width == 0 || cli.height == 0 {
             bail!("render width and height must be greater than zero");
@@ -43,13 +43,24 @@ fn main() -> Result<()> {
             RenderMode::Uncommitted => crate::model::ChangeMode::Uncommitted,
             RenderMode::Branch => crate::model::ChangeMode::Branch,
         };
-        app.prepare_render(cli.history, cli.commit.as_deref())?;
-        println!("{}", ui::render_snapshot(&mut app, cli.width, cli.height));
+        app.prepare_render(
+            matches!(cli.focus, Some(StartupFocus::History)),
+            cli.commit.as_deref(),
+        )?;
+        apply_startup_panel(&mut app, &cli);
+        println!(
+            "{}",
+            ui::render_snapshot(&mut app, cli.width, cli.height, cli.ansi)
+        );
         return Ok(());
     }
     if !std::io::stdout().is_terminal() {
         bail!("git-navigator requires an interactive terminal");
     }
+    if cli.focus == Some(StartupFocus::History) {
+        app.prepare_render(true, None)?;
+    }
+    apply_startup_panel(&mut app, &cli);
 
     let mut auto_refresh = AutoRefresh::new(
         &app.directory,
@@ -63,6 +74,27 @@ fn main() -> Result<()> {
     ratatui::restore();
 
     result.and(cleanup_result).context("terminal error")
+}
+
+fn apply_startup_panel(app: &mut App, cli: &Cli) {
+    let Some(focus) = cli.focus else {
+        return;
+    };
+    let panel = match focus {
+        StartupFocus::History => {
+            app.worktree_panel = WorktreePanel::History;
+            Focus::Worktrees
+        }
+        StartupFocus::Worktrees => {
+            app.worktree_panel = WorktreePanel::Worktrees;
+            Focus::Worktrees
+        }
+        StartupFocus::Files => Focus::Files,
+        StartupFocus::Diff => Focus::Diff,
+    };
+    app.focus = panel;
+    app.expanded = true;
+    app.initial_layout_applied = true;
 }
 
 fn run_app(

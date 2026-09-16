@@ -8,6 +8,14 @@ pub enum RenderMode {
     Branch,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum StartupFocus {
+    Worktrees,
+    History,
+    Files,
+    Diff,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "git-navigator",
@@ -26,9 +34,13 @@ pub struct Cli {
     #[arg(long)]
     pub render: bool,
 
-    /// Render the History panel, including its selected commit and markers
+    /// Preserve terminal colors and modifiers in rendered output
     #[arg(long)]
-    pub history: bool,
+    pub ansi: bool,
+
+    /// Start with this panel focused and expanded
+    #[arg(long, value_enum)]
+    pub focus: Option<StartupFocus>,
 
     /// Comparison mode used by a rendered snapshot
     #[arg(long, value_enum, default_value_t = RenderMode::Uncommitted)]
@@ -58,7 +70,9 @@ mod tests {
         assert_eq!(cli.directory, PathBuf::from("."));
         assert_eq!(cli.base, "main");
         assert!(!cli.render);
+        assert!(!cli.ansi);
         assert_eq!(cli.mode, RenderMode::Uncommitted);
+        assert_eq!(cli.focus, None);
     }
 
     #[test]
@@ -74,7 +88,8 @@ mod tests {
             "git-navigator",
             ".",
             "--render",
-            "--history",
+            "--focus",
+            "history",
             "--mode",
             "branch",
             "--commit",
@@ -83,14 +98,16 @@ mod tests {
             "100",
             "--height",
             "30",
+            "--ansi",
         ])
         .expect("render options should be accepted");
 
         assert!(cli.render);
-        assert!(cli.history);
         assert_eq!(cli.mode, RenderMode::Branch);
         assert_eq!(cli.commit.as_deref(), Some("abc123"));
         assert_eq!(cli.width, 100);
         assert_eq!(cli.height, 30);
+        assert!(cli.ansi);
+        assert_eq!(cli.focus, Some(StartupFocus::History));
     }
 }

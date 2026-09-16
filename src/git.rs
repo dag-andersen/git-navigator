@@ -82,19 +82,60 @@ pub fn common_git_dir(directory: &Path) -> Result<PathBuf> {
 pub fn commit_history(worktree: &Path) -> Result<Vec<Commit>> {
     let output = git_text(
         worktree,
-        &["log", "--format=%H%x00%h%x00%s", "--max-count=100"],
+        &[
+            "log",
+            "--all",
+            "--graph",
+            "--format=%x01%H%x00%h%x00%s",
+            "--max-count=100",
+        ],
     )?;
-    Ok(output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\0');
-            Some(Commit {
-                hash: fields.next()?.to_string(),
-                short_hash: fields.next()?.to_string(),
-                subject: fields.next()?.to_string(),
-            })
+    Ok(parse_commit_history(&output))
+}
+
+fn parse_commit_history(output: &str) -> Vec<Commit> {
+    let mut pending_graph = Vec::new();
+    let mut commits = Vec::new();
+
+    for line in output.lines() {
+        let Some((graph, metadata)) = line.split_once('\u{1}') else {
+            pending_graph.push(graph_text(line));
+            continue;
+        };
+        let mut fields = metadata.split('\0');
+        let Some(hash) = fields.next() else {
+            continue;
+        };
+        let Some(short_hash) = fields.next() else {
+            continue;
+        };
+        let Some(subject) = fields.next() else {
+            continue;
+        };
+
+        pending_graph.push(graph_text(graph));
+        commits.push(Commit {
+            hash: hash.to_string(),
+            short_hash: short_hash.to_string(),
+            subject: subject.to_string(),
+            graph: std::mem::take(&mut pending_graph),
+        });
+    }
+
+    commits
+}
+
+fn graph_text(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '|' => '│',
+            '/' => '╱',
+            '\\' => '╲',
+            '-' => '─',
+            '*' => '●',
+            other => other,
         })
-        .collect())
+        .collect()
 }
 
 pub fn history_base_commit(worktree: &Path, base: &str) -> Result<String> {
@@ -864,6 +905,17 @@ index 1111111..2222222 100644
         assert_eq!(files[0].hunks[0].rows[1].kind, DiffRowKind::Modified);
         assert_eq!(files[0].hunks[0].rows[3].kind, DiffRowKind::Added);
         assert_eq!(files[0].hunks[0].rows[3].new_number, Some(4));
+    }
+
+    #[test]
+    fn parses_git_graph_lines_into_commit_rows() {
+        let output = "* \u{1}head\u{0}head\u{0}head commit\n| * \u{1}side\u{0}side\u{0}side commit\n|/  \n* \u{1}base\u{0}base\u{0}base commit\n";
+        let commits = parse_commit_history(output);
+
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].graph, vec!["● "]);
+        assert_eq!(commits[1].graph, vec!["│ ● "]);
+        assert_eq!(commits[2].graph, vec!["│╱  ", "● "]);
     }
 
     #[test]

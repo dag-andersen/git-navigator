@@ -80,6 +80,7 @@ pub struct Commit {
     pub hash: String,
     pub short_hash: String,
     pub subject: String,
+    pub graph: Vec<String>,
 }
 
 impl Worktree {
