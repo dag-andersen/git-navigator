@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     ffi::OsString,
     path::{Component, Path, PathBuf},
 };
@@ -151,7 +151,7 @@ pub struct App {
     pub search: Option<SearchState>,
     pub worktree_panel: WorktreePanel,
     pub commits: Vec<Commit>,
-    pub history_base_commit: Option<String>,
+    pub history_range_commits: HashSet<String>,
     pub selected_commit: Option<usize>,
     pub history_preferred_file: Option<PathBuf>,
 }
@@ -186,12 +186,6 @@ impl App {
                 )
             })?
         };
-        let history_base_commit = if has_linked_worktrees {
-            None
-        } else {
-            git::history_base_commit(&worktrees[selected_worktree].path, &base).ok()
-        };
-
         let mut worktree_state = ListState::default();
         worktree_state.select(Some(selected_worktree));
         let mut history_state = ListState::default();
@@ -244,7 +238,7 @@ impl App {
                 WorktreePanel::History
             },
             commits,
-            history_base_commit,
+            history_range_commits: HashSet::new(),
             selected_commit: (!has_linked_worktrees).then_some(0),
             history_preferred_file,
         })
@@ -436,6 +430,10 @@ impl App {
         self.selected_commit = next;
         self.history_state
             .select(crate::ui::history_visual_index(self, next));
+        if let Err(error) = self.update_history_range() {
+            self.set_error(format!("Could not update history range: {error:#}"));
+            return;
+        }
         if visible_position == 0 {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
@@ -502,7 +500,6 @@ impl App {
                 .map(|worktree| worktree.path.clone())
                 .context("no worktree is selected")?;
             self.commits = git::commit_history(&worktree_path)?;
-            self.history_base_commit = git::history_base_commit(&worktree_path, &self.base).ok();
             self.worktree_panel = WorktreePanel::History;
             self.focus = Focus::Worktrees;
             self.selected_commit = match selected_commit {
@@ -519,6 +516,7 @@ impl App {
             };
             self.history_state
                 .select(crate::ui::history_visual_index(self, self.selected_commit));
+            self.update_history_range()?;
             if self.history_commit_selected() {
                 self.reload_selected_commit();
             } else {
@@ -726,6 +724,9 @@ impl App {
 
     fn toggle_mode(&mut self) {
         self.mode = self.mode.toggle();
+        if let Err(error) = self.update_history_range() {
+            self.set_error(format!("Could not update history range: {error:#}"));
+        }
         if self.history_commit_selected() {
             self.reload_selected_commit();
         } else {
@@ -784,8 +785,6 @@ impl App {
                         match git::commit_history(&worktree_path) {
                             Ok(commits) => {
                                 self.commits = commits;
-                                self.history_base_commit =
-                                    git::history_base_commit(&worktree_path, &self.base).ok();
                             }
                             Err(error) => {
                                 self.set_error(format!("Refresh failed: {error:#}"));
@@ -798,6 +797,10 @@ impl App {
                         selected_commit_hash.as_deref(),
                         &self.commits,
                     );
+                    if let Err(error) = self.update_history_range() {
+                        self.set_error(format!("Could not update history range: {error:#}"));
+                        return;
+                    }
                     if self.selected_commit == Some(0) {
                         self.reload_files_with_position(
                             selected_file.as_deref(),
@@ -1135,10 +1138,12 @@ impl App {
                 self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
                 self.focus = Focus::Worktrees;
                 self.commits = commits;
-                self.history_base_commit =
-                    git::history_base_commit(&worktree_path, &self.base).ok();
                 self.selected_commit = Some(0);
                 self.worktree_panel = WorktreePanel::History;
+                if let Err(error) = self.update_history_range() {
+                    self.set_error(format!("Could not update history range: {error:#}"));
+                    return;
+                }
                 let preferred = self.history_preferred_file.clone();
                 self.reload_files(preferred.as_deref());
             }
@@ -1158,6 +1163,10 @@ impl App {
         self.selected_commit = next;
         self.history_state
             .select(crate::ui::history_visual_index(self, next));
+        if let Err(error) = self.update_history_range() {
+            self.set_error(format!("Could not update history range: {error:#}"));
+            return;
+        }
         if next == Some(0) {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
@@ -1170,6 +1179,30 @@ impl App {
         if let Err(error) = self.load_selected_commit_files() {
             self.set_error(format!("Could not load commit: {error:#}"));
         }
+    }
+
+    fn update_history_range(&mut self) -> Result<()> {
+        self.history_range_commits.clear();
+        if self.mode != ChangeMode::Branch || !self.history_active() {
+            return Ok(());
+        }
+
+        let worktree_path = self
+            .selected_worktree()
+            .map(|worktree| worktree.path.clone())
+            .context("no worktree is selected")?;
+        let target = match self.selected_commit {
+            Some(0) => "HEAD".to_string(),
+            Some(index) => self
+                .commits
+                .get(index - 1)
+                .map(|commit| commit.hash.clone())
+                .context("selected history commit is not available")?,
+            None => return Ok(()),
+        };
+        self.history_range_commits =
+            git::history_range_commits(&worktree_path, &target, &self.base)?;
+        Ok(())
     }
 
     fn load_selected_commit_files(&mut self) -> Result<()> {
@@ -2662,7 +2695,7 @@ mod tests {
             search: None,
             worktree_panel: WorktreePanel::Worktrees,
             commits: Vec::new(),
-            history_base_commit: None,
+            history_range_commits: HashSet::new(),
             selected_commit: None,
             history_preferred_file: None,
         }

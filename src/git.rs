@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -138,11 +139,15 @@ fn graph_text(text: &str) -> String {
         .collect()
 }
 
-pub fn history_base_commit(worktree: &Path, base: &str) -> Result<String> {
+pub fn history_range_commits(worktree: &Path, target: &str, base: &str) -> Result<HashSet<String>> {
     let base_ref = resolve_base_ref(worktree, base)?;
-    Ok(git_text(worktree, &["merge-base", "HEAD", &base_ref])?
-        .trim()
-        .to_string())
+    let output = git_text(worktree, &["rev-list", target, "--not", &base_ref])?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 pub fn load_commit_changes(
@@ -1110,6 +1115,34 @@ index 1111111..0000000
                 .iter()
                 .all(|hunk| hunk.kind == HunkKind::Combined)
         }));
+    }
+
+    #[test]
+    fn history_range_commits_excludes_commits_already_on_base() {
+        let repository = TestRepository::new();
+        let base = git_text(repository.path(), &["rev-parse", "main"])
+            .expect("base commit should resolve")
+            .trim()
+            .to_string();
+        assert!(
+            history_range_commits(repository.path(), "HEAD", "main")
+                .expect("main history range should load")
+                .is_empty()
+        );
+        run_git(repository.path(), &["switch", "-c", "feature"]);
+        fs::write(repository.path().join("feature.txt"), "feature\n")
+            .expect("feature file should be writable");
+        run_git(repository.path(), &["add", "feature.txt"]);
+        run_git(repository.path(), &["commit", "-m", "feature commit"]);
+        let head = git_text(repository.path(), &["rev-parse", "HEAD"])
+            .expect("head commit should resolve")
+            .trim()
+            .to_string();
+
+        let range = history_range_commits(repository.path(), &head, "main")
+            .expect("history range should load");
+        assert!(range.contains(&head));
+        assert!(!range.contains(&base));
     }
 
     #[test]

@@ -262,11 +262,7 @@ fn graph_node(active: bool) -> Span<'static> {
 
 fn graph_line(graph: &str, active: bool) -> Line<'static> {
     let mut spans = Vec::new();
-    let graph_style = Style::new().fg(if active {
-        Color::LightGreen
-    } else {
-        Color::DarkGray
-    });
+    let graph_style = Style::new().fg(Color::DarkGray);
     for character in graph.chars() {
         let style = if character == '●' {
             Style::new()
@@ -290,35 +286,16 @@ fn graph_line(graph: &str, active: bool) -> Line<'static> {
 fn history_wip_is_in_branch_diff(app: &App) -> bool {
     app.mode == ChangeMode::Branch
         && app.selected_commit == Some(0)
-        && app.history_base_commit.is_some()
+        && !app.history_range_commits.is_empty()
 }
 
 fn history_commit_is_in_branch_diff(app: &App, commit_index: usize) -> bool {
-    if app.mode != ChangeMode::Branch || app.history_base_commit.is_none() {
+    if app.mode != ChangeMode::Branch {
         return false;
     }
-
-    let base_index = app
-        .history_base_commit
-        .as_deref()
-        .and_then(|hash| app.commits.iter().position(|commit| commit.hash == hash));
-
-    let Some(selected_commit) = app.selected_commit else {
-        return false;
-    };
-    if selected_commit == 0 {
-        return base_index.is_none_or(|base_index| commit_index < base_index);
-    }
-    let selected_commit_index = selected_commit - 1;
-
-    match base_index {
-        Some(base_index) => {
-            selected_commit_index < base_index
-                && commit_index >= selected_commit_index
-                && commit_index < base_index
-        }
-        None => commit_index >= selected_commit_index,
-    }
+    app.commits
+        .get(commit_index)
+        .is_some_and(|commit| app.history_range_commits.contains(&commit.hash))
 }
 
 #[cfg(test)]
@@ -1738,7 +1715,7 @@ mod tests {
             search: None,
             worktree_panel: crate::app::WorktreePanel::Worktrees,
             commits: Vec::new(),
-            history_base_commit: None,
+            history_range_commits: std::collections::HashSet::new(),
             selected_commit: None,
             history_preferred_file: None,
         };
@@ -1803,7 +1780,6 @@ mod tests {
             subject: "base commit".into(),
             graph: vec!["●".into()],
         }];
-        app.history_base_commit = Some("base-hash".into());
         terminal
             .draw(|frame| render(frame, &mut app))
             .expect("history should render");
@@ -1872,7 +1848,7 @@ mod tests {
             search: None,
             worktree_panel: crate::app::WorktreePanel::History,
             commits,
-            history_base_commit: Some("base".into()),
+            history_range_commits: ["middle".to_string()].into_iter().collect(),
             selected_commit: Some(2),
             history_preferred_file: None,
         };
@@ -1883,6 +1859,17 @@ mod tests {
         assert!(!history_commit_is_in_branch_diff(&app, 3));
 
         app.selected_commit = Some(0);
-        assert!(history_wip_is_in_branch_diff(&app));
+        app.history_range_commits.clear();
+        assert!(!history_wip_is_in_branch_diff(&app));
+    }
+
+    #[test]
+    fn branch_history_highlights_only_commit_nodes() {
+        let line = graph_line("│╱ ●", true);
+
+        assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(line.spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(line.spans[2].style.fg, Some(Color::DarkGray));
+        assert_eq!(line.spans[3].style.fg, Some(Color::LightGreen));
     }
 }
