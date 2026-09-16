@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::{
     git,
-    model::{ChangeMode, ChangedFile, DiffLayout, DiffView, FileTreeRow, Worktree},
+    model::{ChangeMode, ChangedFile, Commit, DiffLayout, DiffView, FileTreeRow, Worktree},
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -67,6 +67,13 @@ pub struct SearchState {
     pub query: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorktreePanel {
+    #[default]
+    Worktrees,
+    History,
+}
+
 impl Focus {
     fn left(self) -> Self {
         match self {
@@ -108,6 +115,10 @@ pub struct App {
     pub worktree_filter: String,
     pub file_filter: String,
     pub search: Option<SearchState>,
+    pub worktree_panel: WorktreePanel,
+    pub commits: Vec<Commit>,
+    pub selected_commit: Option<usize>,
+    pub history_preferred_file: Option<PathBuf>,
 }
 
 impl App {
@@ -167,6 +178,10 @@ impl App {
             worktree_filter: String::new(),
             file_filter: String::new(),
             search: None,
+            worktree_panel: WorktreePanel::Worktrees,
+            commits: Vec::new(),
+            selected_commit: None,
+            history_preferred_file: None,
         })
     }
 
@@ -203,6 +218,9 @@ impl App {
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('d') if self.focus == Focus::Worktrees => self.request_worktree_removal(),
+            KeyCode::Char('h') if matches!(self.focus, Focus::Worktrees | Focus::Files) => {
+                self.toggle_history()
+            }
             KeyCode::Tab => self.toggle_mode(),
             KeyCode::Char('v') => self.toggle_diff_view(),
             KeyCode::Char('s') => self.diff_layout = self.diff_layout.toggle(),
@@ -261,6 +279,14 @@ impl App {
 
     pub fn has_linked_worktrees(&self) -> bool {
         self.worktrees.iter().any(|worktree| !worktree.is_main)
+    }
+
+    pub fn history_active(&self) -> bool {
+        self.worktree_panel == WorktreePanel::History
+    }
+
+    pub fn history_commit_selected(&self) -> bool {
+        self.history_active() && self.selected_commit.is_some_and(|index| index > 0)
     }
 
     pub fn search_query(&self, focus: Focus) -> &str {
@@ -377,6 +403,10 @@ impl App {
     }
 
     fn move_worktree(&mut self, delta: isize) {
+        if self.history_active() {
+            self.move_commit(delta);
+            return;
+        }
         let visible = self.visible_worktree_indices();
         let current = self
             .worktree_state
@@ -405,6 +435,9 @@ impl App {
             return;
         }
         self.file_state.select(next);
+        if self.history_active() {
+            self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
+        }
         self.diff_state.select(first_diff_row(
             &self.files,
             &self.file_tree,
@@ -446,13 +479,21 @@ impl App {
 
     fn toggle_mode(&mut self) {
         self.mode = self.mode.toggle();
-        self.reload_files(None);
+        if self.history_commit_selected() {
+            self.reload_selected_commit();
+        } else {
+            self.reload_files(None);
+        }
     }
 
     fn toggle_diff_view(&mut self) {
         let selected_file = self.selected_file().map(|file| file.path.clone());
         self.diff_view = self.diff_view.toggle();
-        self.reload_files(selected_file.as_deref());
+        if self.history_commit_selected() {
+            self.reload_selected_commit();
+        } else {
+            self.reload_files(selected_file.as_deref());
+        }
     }
 
     pub fn refresh(&mut self) {
@@ -461,11 +502,20 @@ impl App {
             .map(|worktree| worktree.path.clone());
         let selected_file = self.selected_file().map(|file| file.path.clone());
         let diff_position = self.diff_position();
+        let history_wip_selected = self.history_active() && self.selected_commit == Some(0);
+        let selected_commit_hash = self
+            .selected_commit
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| self.commits.get(index))
+            .map(|commit| commit.hash.clone());
 
         match git::discover_worktrees(&self.directory) {
             Ok(worktrees) => {
                 self.worktrees = worktrees;
-                if !self.has_linked_worktrees() && self.focus == Focus::Worktrees {
+                if !self.has_linked_worktrees()
+                    && !self.history_active()
+                    && self.focus == Focus::Worktrees
+                {
                     self.focus = Focus::Files;
                     self.search = None;
                 }
@@ -479,7 +529,33 @@ impl App {
                     })
                     .or((!self.worktrees.is_empty()).then_some(0));
                 self.worktree_state.select(selected);
-                self.reload_files_with_position(selected_file.as_deref(), diff_position.as_ref());
+                if self.history_active() {
+                    if let Some(worktree) = self.selected_worktree() {
+                        match git::commit_history(&worktree.path) {
+                            Ok(commits) => self.commits = commits,
+                            Err(error) => {
+                                self.set_error(format!("Refresh failed: {error:#}"));
+                                return;
+                            }
+                        }
+                    }
+                    self.selected_commit = history_selection_after_refresh(
+                        history_wip_selected,
+                        selected_commit_hash.as_deref(),
+                        &self.commits,
+                    );
+                    if self.selected_commit == Some(0) {
+                        self.reload_files_with_position(
+                            selected_file.as_deref(),
+                            diff_position.as_ref(),
+                        );
+                    }
+                } else {
+                    self.reload_files_with_position(
+                        selected_file.as_deref(),
+                        diff_position.as_ref(),
+                    );
+                }
             }
             Err(error) => self.set_error(format!("Refresh failed: {error:#}")),
         }
@@ -783,6 +859,87 @@ impl App {
         }
     }
 
+    fn toggle_history(&mut self) {
+        if self.history_active() {
+            self.worktree_panel = WorktreePanel::Worktrees;
+            self.selected_commit = None;
+            let preferred = self.history_preferred_file.take();
+            self.reload_files(preferred.as_deref());
+            return;
+        }
+        let Some(worktree) = self.selected_worktree() else {
+            return;
+        };
+        match git::commit_history(&worktree.path) {
+            Ok(commits) => {
+                self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
+                self.focus = Focus::Worktrees;
+                self.commits = commits;
+                self.selected_commit = Some(0);
+                self.worktree_panel = WorktreePanel::History;
+                let preferred = self.history_preferred_file.clone();
+                self.reload_files(preferred.as_deref());
+            }
+            Err(error) => self.set_error(format!("Could not load commit history: {error:#}")),
+        }
+    }
+
+    fn move_commit(&mut self, delta: isize) {
+        let next = moved_selection(
+            self.selected_commit.or(Some(0)),
+            self.commits.len().saturating_add(1),
+            delta,
+        );
+        if next == self.selected_commit {
+            return;
+        }
+        self.selected_commit = next;
+        if next == Some(0) {
+            let preferred = self.history_preferred_file.clone();
+            self.reload_files(preferred.as_deref());
+        } else {
+            self.reload_selected_commit();
+        }
+    }
+
+    fn reload_selected_commit(&mut self) {
+        let Some(commit_index) = self.selected_commit.and_then(|index| index.checked_sub(1)) else {
+            let preferred = self.history_preferred_file.clone();
+            self.reload_files(preferred.as_deref());
+            return;
+        };
+        let Some(worktree) = self.selected_worktree() else {
+            return;
+        };
+        match git::load_commit_changes(
+            &worktree.path,
+            &self.commits[commit_index],
+            self.diff_view,
+            self.mode,
+            &self.base,
+        ) {
+            Ok(files) => {
+                self.files = files;
+                self.file_tree = build_file_tree(&self.files);
+                let selected = self
+                    .history_preferred_file
+                    .as_deref()
+                    .and_then(|path| {
+                        self.file_tree.iter().position(|row| {
+                            row.file_index
+                                .and_then(|index| self.files.get(index))
+                                .is_some_and(|file| file.path == path)
+                        })
+                    })
+                    .or_else(|| first_file_row(&self.file_tree));
+                self.file_state.select(selected);
+                self.diff_state
+                    .select(first_diff_row(&self.files, &self.file_tree, selected));
+            }
+            Err(error) => self.set_error(format!("Could not load commit: {error:#}")),
+        }
+    }
+
     fn search_diff(&mut self, direction: isize) {
         let Some(query) = self.search.as_ref().map(|search| search.query.clone()) else {
             return;
@@ -919,6 +1076,20 @@ fn moved_selection(selected: Option<usize>, length: usize, delta: isize) -> Opti
 
 fn worktree_index(worktrees: &[Worktree], path: &Path) -> Option<usize> {
     worktrees.iter().position(|worktree| worktree.path == path)
+}
+
+fn history_selection_after_refresh(
+    wip_selected: bool,
+    selected_hash: Option<&str>,
+    commits: &[Commit],
+) -> Option<usize> {
+    if wip_selected {
+        return Some(0);
+    }
+    selected_hash
+        .and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
+        .map(|index| index + 1)
+        .or(Some(0))
 }
 
 fn first_diff_row(
@@ -1691,6 +1862,7 @@ mod tests {
             prunable_reason: None,
             locked_reason: None,
         });
+        app.worktree_state.select(Some(0));
         assert!(!app.expanded);
 
         app.handle_key(key(KeyCode::Char(' ')));
@@ -1727,6 +1899,143 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(app.panel_layout, PanelLayout::Columns);
+    }
+
+    #[test]
+    fn h_toggles_history_from_worktrees_and_files() {
+        let mut app = test_app();
+        app.worktrees.push(Worktree {
+            path: PathBuf::from("/repo/agent"),
+            branch: "agent".into(),
+            head: "12345678".into(),
+            dirty: false,
+            is_current: false,
+            is_main: false,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
+        let repository = tempfile::tempdir().expect("temporary repository should be created");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git init should run");
+        std::fs::write(repository.path().join("file"), "content").expect("file should be written");
+        std::process::Command::new("git")
+            .args(["add", "file"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git add should run");
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(repository.path())
+            .status()
+            .expect("git commit should run");
+        app.worktree_state.select(Some(0));
+        app.worktrees[0].path = repository.path().to_path_buf();
+        app.handle_key(key(KeyCode::Char('h')));
+        assert!(app.history_active());
+        assert_eq!(app.focus, Focus::Worktrees);
+
+        app.handle_key(key(KeyCode::Char('h')));
+        assert!(!app.history_active());
+        app.focus = Focus::Files;
+        app.handle_key(key(KeyCode::Char('h')));
+        assert!(app.history_active());
+    }
+
+    #[test]
+    fn tab_changes_comparison_mode_while_history_is_active() {
+        let mut app = test_app();
+        app.worktree_panel = WorktreePanel::History;
+        app.mode = ChangeMode::Uncommitted;
+
+        app.handle_key(key(KeyCode::Tab));
+
+        assert_eq!(app.mode, ChangeMode::Branch);
+        assert!(app.history_active());
+    }
+
+    #[test]
+    fn wip_is_the_first_history_entry_and_uses_live_changes() {
+        let mut app = test_app();
+        app.worktree_panel = WorktreePanel::History;
+        app.commits = vec![Commit {
+            hash: "1234567890abcdef".into(),
+            short_hash: "12345678".into(),
+            subject: "commit".into(),
+        }];
+        app.selected_commit = Some(1);
+
+        app.move_commit(-1);
+
+        assert_eq!(app.selected_commit, Some(0));
+        assert!(!app.history_commit_selected());
+    }
+
+    #[test]
+    fn history_commit_reload_prefers_the_remembered_file() {
+        let mut app = test_app();
+        app.history_preferred_file = Some(PathBuf::from("src/app.rs"));
+        app.files = vec![
+            ChangedFile::empty(PathBuf::from("README.md"), FileStatus::Modified),
+            ChangedFile::empty(PathBuf::from("src/app.rs"), FileStatus::Modified),
+        ];
+        app.file_tree = build_file_tree(&app.files);
+        let selected = app
+            .history_preferred_file
+            .as_deref()
+            .and_then(|path| {
+                app.file_tree.iter().position(|row| {
+                    row.file_index
+                        .and_then(|index| app.files.get(index))
+                        .is_some_and(|file| file.path == path)
+                })
+            })
+            .or_else(|| first_file_row(&app.file_tree));
+
+        assert_eq!(
+            selected.and_then(|row| app.file_tree[row].file_index),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn history_refresh_preserves_wip_or_selected_commit_hash() {
+        let commits = vec![
+            Commit {
+                hash: "new".into(),
+                short_hash: "new".into(),
+                subject: "new commit".into(),
+            },
+            Commit {
+                hash: "selected".into(),
+                short_hash: "selected".into(),
+                subject: "selected commit".into(),
+            },
+        ];
+
+        assert_eq!(
+            history_selection_after_refresh(true, None, &commits),
+            Some(0)
+        );
+        assert_eq!(
+            history_selection_after_refresh(false, Some("selected"), &commits),
+            Some(2)
+        );
+        assert_eq!(
+            history_selection_after_refresh(false, Some("rewritten"), &commits),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1803,6 +2112,10 @@ mod tests {
             worktree_filter: String::new(),
             file_filter: String::new(),
             search: None,
+            worktree_panel: WorktreePanel::Worktrees,
+            commits: Vec::new(),
+            selected_commit: None,
+            history_preferred_file: None,
         }
     }
 

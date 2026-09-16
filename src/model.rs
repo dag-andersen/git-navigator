@@ -75,6 +75,13 @@ pub struct Worktree {
     pub locked_reason: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Commit {
+    pub hash: String,
+    pub short_hash: String,
+    pub subject: String,
+}
+
 impl Worktree {
     pub fn is_missing(&self) -> bool {
         !self.available || self.prunable_reason.is_some()

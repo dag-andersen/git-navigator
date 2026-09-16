@@ -8,8 +8,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::model::{
-    ChangeMode, ChangedFile, DiffHunk, DiffRow, DiffRowKind, DiffView, FileStatus, HunkKind,
-    Worktree,
+    ChangeMode, ChangedFile, Commit, DiffHunk, DiffRow, DiffRowKind, DiffView, FileStatus,
+    HunkKind, Worktree,
 };
 
 const HUNK_CONTEXT: &str = "--unified=3";
@@ -77,6 +77,70 @@ pub fn common_git_dir(directory: &Path) -> Result<PathBuf> {
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
     Ok(PathBuf::from(path.trim()))
+}
+
+pub fn commit_history(worktree: &Path) -> Result<Vec<Commit>> {
+    let output = git_text(
+        worktree,
+        &["log", "--format=%H%x00%h%x00%s", "--max-count=100"],
+    )?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            Some(Commit {
+                hash: fields.next()?.to_string(),
+                short_hash: fields.next()?.to_string(),
+                subject: fields.next()?.to_string(),
+            })
+        })
+        .collect())
+}
+
+pub fn load_commit_changes(
+    worktree: &Path,
+    commit: &Commit,
+    view: DiffView,
+    mode: ChangeMode,
+    base: &str,
+) -> Result<Vec<ChangedFile>> {
+    let start = match mode {
+        ChangeMode::Uncommitted => git_text(worktree, &["rev-parse", &format!("{}^", commit.hash)])
+            .map(|parent| parent.trim().to_string())
+            .unwrap_or_else(|_| "4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_string()),
+        ChangeMode::Branch => {
+            let base_ref = resolve_base_ref(worktree, base)?;
+            git_text(worktree, &["merge-base", &commit.hash, &base_ref])?
+                .trim()
+                .to_string()
+        }
+    };
+    let context = if view == DiffView::FullFile {
+        FULL_FILE_CONTEXT
+    } else {
+        HUNK_CONTEXT
+    };
+    let patch = git_text(
+        worktree,
+        &[
+            "diff",
+            "--patch",
+            "--no-ext-diff",
+            "--no-color",
+            "--no-textconv",
+            "--find-renames",
+            context,
+            &start,
+            &commit.hash,
+            "--",
+        ],
+    )?;
+    let kind = if view == DiffView::FullFile {
+        HunkKind::FullFile
+    } else {
+        HunkKind::Combined
+    };
+    Ok(parse_diff(&patch, kind))
 }
 
 pub fn remove_worktree(repository: &Path, worktree: &Worktree) -> Result<()> {

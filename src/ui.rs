@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     render_header(frame, app, header);
-    let show_worktrees = app.has_linked_worktrees();
+    let show_worktrees = app.has_linked_worktrees() || app.history_active();
     let [worktrees, files, diff] = panel_areas_for(
         body,
         app.focus,
@@ -57,7 +57,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }),
         );
     } else if show_worktrees {
-        render_worktrees(frame, app, worktrees);
+        if app.history_active() {
+            render_history(frame, app, worktrees);
+        } else {
+            render_worktrees(frame, app, worktrees);
+        }
     }
     if app.expanded && app.focus != Focus::Files {
         render_compact_panel(
@@ -93,6 +97,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if let Some(confirmation) = &app.delete_confirmation {
         render_delete_confirmation(frame, confirmation);
     }
+}
+
+fn render_history(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = std::iter::once(ListItem::new(Line::from(vec![
+        Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
+        Span::raw("Uncommitted changes"),
+    ])))
+    .chain(app.commits.iter().map(|commit| {
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", commit.short_hash),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw(commit.subject.clone()),
+        ]))
+    }))
+    .collect();
+    let title = format!("History ({})", app.commits.len() + 1);
+    let list = List::new(items)
+        .block(pane_block(&title, app.focus == Focus::Worktrees))
+        .highlight_style(SELECTED)
+        .highlight_symbol("› ");
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(app.selected_commit);
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 #[cfg(test)]
@@ -204,13 +233,19 @@ fn render_compact_panel(
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    let mode_label = match (app.history_commit_selected(), app.mode) {
+        (true, ChangeMode::Uncommitted) => " COMMIT ",
+        (true, ChangeMode::Branch) => " COMMIT RANGE ",
+        (false, ChangeMode::Uncommitted) => " UNCOMMITTED ",
+        (false, ChangeMode::Branch) => " BRANCH ",
+    };
     let mode = match app.mode {
         ChangeMode::Uncommitted => Span::styled(
-            " UNCOMMITTED ",
+            mode_label,
             Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
         ),
         ChangeMode::Branch => Span::styled(
-            " BRANCH ",
+            mode_label,
             Style::new().fg(Color::Black).bg(Color::Blue).bold(),
         ),
     };
@@ -218,9 +253,13 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         .selected_worktree()
         .map(|worktree| worktree.path.display().to_string())
         .unwrap_or_else(|| app.directory.display().to_string());
-    let detail = match app.mode {
-        ChangeMode::Uncommitted => "staged + unstaged + untracked".to_string(),
-        ChangeMode::Branch => format!("since divergence from {}", app.base),
+    let detail = match (app.history_commit_selected(), app.mode) {
+        (true, ChangeMode::Uncommitted) => "selected commit compared with its parent".to_string(),
+        (true, ChangeMode::Branch) => {
+            format!("selected commit since divergence from {}", app.base)
+        }
+        (false, ChangeMode::Uncommitted) => "staged + unstaged + untracked".to_string(),
+        (false, ChangeMode::Branch) => format!("since divergence from {}", app.base),
     };
 
     let text = Text::from(vec![
@@ -1049,8 +1088,16 @@ fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
     }
     if focus == Focus::Worktrees {
         spans.extend([
+            Span::styled("h", Style::new().fg(Color::Cyan)),
+            Span::raw(" history  "),
             Span::styled("d", Style::new().fg(Color::Cyan)),
             Span::raw(" clean worktree  "),
+        ]);
+    }
+    if focus == Focus::Files {
+        spans.extend([
+            Span::styled("h", Style::new().fg(Color::Cyan)),
+            Span::raw(" history  "),
         ]);
     }
     spans.extend([
@@ -1478,6 +1525,10 @@ mod tests {
             worktree_filter: String::new(),
             file_filter: String::new(),
             search: None,
+            worktree_panel: crate::app::WorktreePanel::Worktrees,
+            commits: Vec::new(),
+            selected_commit: None,
+            history_preferred_file: None,
         };
         app.worktrees.extend((1..=3).map(|index| Worktree {
             path: PathBuf::from(format!("/demo-worktree-{index}")),
