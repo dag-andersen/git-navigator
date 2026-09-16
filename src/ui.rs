@@ -1111,8 +1111,6 @@ fn search_line(focus: Focus, query: &str) -> Line<'static> {
 
 fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("Mouse", Style::new().fg(Color::Cyan)),
-        Span::raw(" click/scroll  "),
         Span::styled("←/→", Style::new().fg(Color::Cyan)),
         Span::raw(" panes  "),
         Span::styled("↑/↓", Style::new().fg(Color::Cyan)),
