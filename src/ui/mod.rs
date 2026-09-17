@@ -1079,6 +1079,8 @@ mod tests {
             worktree_panel: crate::app::WorktreePanel::Worktrees,
             commits: Vec::new(),
             history_range_commits: std::collections::HashSet::new(),
+            local_base_hash: None,
+            remote_base_hash: None,
             selected_commit: None,
             history_preferred_file: None,
         };
@@ -1212,6 +1214,8 @@ mod tests {
             worktree_panel: crate::app::WorktreePanel::History,
             commits,
             history_range_commits: ["middle".to_string()].into_iter().collect(),
+            local_base_hash: None,
+            remote_base_hash: None,
             selected_commit: Some(2),
             history_preferred_file: None,
         };
@@ -1228,7 +1232,7 @@ mod tests {
 
     #[test]
     fn branch_history_highlights_only_commit_nodes() {
-        let line = graph_line("│╱ ●", true);
+        let line = graph_line("│╱ ●", true, None);
 
         assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
         assert_eq!(line.spans[1].style.fg, Some(Color::DarkGray));

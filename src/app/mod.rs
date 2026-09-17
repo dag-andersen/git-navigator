@@ -173,6 +173,8 @@ pub struct App {
     pub worktree_panel: WorktreePanel,
     pub commits: Vec<Commit>,
     pub history_range_commits: HashSet<String>,
+    pub local_base_hash: Option<String>,
+    pub remote_base_hash: Option<String>,
     pub selected_commit: Option<usize>,
     pub history_preferred_file: Option<PathBuf>,
 }
@@ -260,6 +262,8 @@ impl App {
             },
             commits,
             history_range_commits: HashSet::new(),
+            local_base_hash: None,
+            remote_base_hash: None,
             selected_commit: (!has_linked_worktrees).then_some(0),
             history_preferred_file,
         })
@@ -358,6 +362,8 @@ impl App {
                 .map(|worktree| worktree.path.clone())
                 .context("no worktree is selected")?;
             self.commits = git::commit_history(&worktree_path)?;
+            (self.local_base_hash, self.remote_base_hash) =
+                git::base_tip_hashes(&worktree_path, &self.base);
             self.worktree_panel = WorktreePanel::History;
             self.focus = Focus::Worktrees;
             self.selected_commit = match selected_commit {
@@ -1928,6 +1934,8 @@ mod tests {
             worktree_panel: WorktreePanel::Worktrees,
             commits: Vec::new(),
             history_range_commits: HashSet::new(),
+            local_base_hash: None,
+            remote_base_hash: None,
             selected_commit: None,
             history_preferred_file: None,
         }

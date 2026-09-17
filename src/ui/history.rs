@@ -42,13 +42,13 @@ fn items(app: &App) -> Vec<ListItem<'static>> {
             .graph
             .iter()
             .take(commit.graph.len().saturating_sub(1))
-            .map(|graph| graph_line(graph, active))
+            .map(|graph| graph_line(graph, active, None))
             .collect::<Vec<_>>();
         items.extend(graph_lines.into_iter().map(ListItem::new));
-        let graph = graph_line_with_switch(
+        let graph = graph_line(
             commit.graph.last().map(String::as_str).unwrap_or("●"),
             active,
-            branch_switch_node(commit),
+            base_node(app, &commit.hash),
         );
         let mut commit_line = graph;
         commit_line.spans.extend([
@@ -87,34 +87,24 @@ fn node(active: bool) -> Span<'static> {
     }
 }
 
-pub(crate) fn graph_line(graph: &str, active: bool) -> Line<'static> {
-    graph_line_with_switch(graph, active, false)
-}
-
-fn graph_line_with_switch(graph: &str, active: bool, branch_switch: bool) -> Line<'static> {
+pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Line<'static> {
     let mut spans = Vec::new();
     let graph_style = Style::new().fg(Color::DarkGray);
     for character in graph.chars() {
         let style = if character == '●' {
-            if branch_switch {
-                Style::new().fg(Color::LightYellow).bold()
-            } else {
-                Style::new()
-                    .fg(if active {
-                        Color::LightGreen
-                    } else {
-                        Color::Cyan
-                    })
-                    .bold()
-            }
+            Style::new()
+                .fg(if active {
+                    Color::LightGreen
+                } else {
+                    Color::Cyan
+                })
+                .bold()
         } else {
             graph_style
         };
-        let symbol = if branch_switch && character == '●' {
-            "◉"
-        } else {
-            &character.to_string()
-        };
+        let symbol = marker
+            .filter(|_| character == '●')
+            .map_or_else(|| character.to_string(), |marker| marker.to_string());
         spans.push(Span::styled(symbol.to_string(), style));
     }
     spans.push(Span::raw(
@@ -123,12 +113,14 @@ fn graph_line_with_switch(graph: &str, active: bool, branch_switch: bool) -> Lin
     Line::from(spans)
 }
 
-fn branch_switch_node(commit: &crate::model::Commit) -> bool {
-    commit
-        .graph
-        .iter()
-        .take(commit.graph.len().saturating_sub(1))
-        .any(|line| line.contains('╱') || line.contains('╲'))
+fn base_node(app: &App, hash: &str) -> Option<char> {
+    if app.local_base_hash.as_deref() == Some(hash) {
+        Some('◆')
+    } else if app.remote_base_hash.as_deref() == Some(hash) {
+        Some('◇')
+    } else {
+        None
+    }
 }
 
 pub(crate) fn wip_is_in_branch_diff(app: &App) -> bool {
@@ -144,32 +136,4 @@ pub(crate) fn commit_is_in_branch_diff(app: &App, commit_index: usize) -> bool {
     app.commits
         .get(commit_index)
         .is_some_and(|commit| app.history_range_commits.contains(&commit.hash))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::branch_switch_node;
-    use crate::model::Commit;
-
-    #[test]
-    fn identifies_the_commit_at_a_graph_branch_switch() {
-        let commit = Commit {
-            hash: "base".into(),
-            short_hash: "base".into(),
-            subject: "base".into(),
-            graph: vec!["│╱  ".into(), "● ".into()],
-        };
-        assert!(branch_switch_node(&commit));
-    }
-
-    #[test]
-    fn does_not_mark_a_straight_commit_as_a_branch_switch() {
-        let commit = Commit {
-            hash: "head".into(),
-            short_hash: "head".into(),
-            subject: "head".into(),
-            graph: vec!["│ ● ".into()],
-        };
-        assert!(!branch_switch_node(&commit));
-    }
 }

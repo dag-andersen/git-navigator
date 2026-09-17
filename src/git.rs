@@ -94,6 +94,13 @@ pub fn commit_history(worktree: &Path) -> Result<Vec<Commit>> {
     Ok(parse_commit_history(&output))
 }
 
+pub fn base_tip_hashes(worktree: &Path, base: &str) -> (Option<String>, Option<String>) {
+    (
+        resolve_ref_hash(worktree, base),
+        resolve_ref_hash(worktree, &format!("origin/{base}")),
+    )
+}
+
 fn parse_commit_history(output: &str) -> Vec<Commit> {
     let mut pending_graph = Vec::new();
     let mut commits = Vec::new();
@@ -444,6 +451,21 @@ fn resolve_base_ref(worktree: &Path, base: &str) -> Result<String> {
         "base branch '{base}' was not found in {}; pass --base <branch> to select another base",
         worktree.display()
     )
+}
+
+fn resolve_ref_hash(worktree: &Path, reference: &str) -> Option<String> {
+    git_allow_failure(
+        worktree,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{reference}^{{commit}}"),
+        ],
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn load_untracked_files(worktree: &Path) -> Result<Vec<ChangedFile>> {
