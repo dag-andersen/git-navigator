@@ -9,8 +9,10 @@ Cargo bin directory.
   integration.
 - Never implement, edit, or commit feature work on `main`.
 - Every task must use its own feature branch and linked worktree.
-- Store each worktree at `<repo-name>-worktrees/<branch-name>/code`, next to the
-  repository. Preserve slashes in the branch name as directories.
+- Store each worktree at `<repo-name>-worktrees/<branch-name>`, next to the
+  repository. The repository files must be checked out directly in the final
+  branch-name directory. Do not add a literal `code` directory. Preserve
+  slashes in the branch name as directories.
 - Commit every completed task before reporting completion. Do not leave
   completed work only in the working tree.
 - Feature branch commits and pushes are allowed. Never push `main`, `master`,
@@ -55,7 +57,7 @@ git switch main
 git pull --ff-only
 repo_name="$(basename "$PWD")"
 branch="agent/<name>/<feature>"
-worktree="../${repo_name}-worktrees/${branch}/code"
+worktree="../${repo_name}-worktrees/${branch}"
 mkdir -p "$(dirname "$worktree")"
 git worktree add -b "$branch" "$worktree" main
 ```
