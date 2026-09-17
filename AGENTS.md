@@ -9,10 +9,12 @@ Cargo bin directory.
   integration.
 - Never implement, edit, or commit feature work on `main`.
 - Every task must use its own feature branch and linked worktree.
-- Store each worktree at `<repo-name>-worktrees/<branch-name>`, next to the
-  repository. The repository files must be checked out directly in the final
-  branch-name directory. Do not add a literal `code` directory. Preserve
-  slashes in the branch name as directories.
+- Each feature branch has exactly one linked worktree. Store it at
+  `<repo-name>-worktrees/<branch-name>`, next to the repository, using the
+  exact branch name as the worktree directory. The repository files must be
+  checked out directly in that directory. Do not add a literal `code`
+  directory. Preserve slashes in the branch name as directories. No particular
+  branch naming prefix is required.
 - Commit every completed task before reporting completion. Do not leave
   completed work only in the working tree.
 - Feature branch commits and pushes are allowed. Never push `main`, `master`,
@@ -56,7 +58,7 @@ Always start from an up-to-date local `main` in the primary worktree:
 git switch main
 git pull --ff-only
 repo_name="$(basename "$PWD")"
-branch="agent/<name>/<feature>"
+branch="<feature-branch-name>"
 worktree="../${repo_name}-worktrees/${branch}"
 mkdir -p "$(dirname "$worktree")"
 git worktree add -b "$branch" "$worktree" main
@@ -107,7 +109,7 @@ Then integrate from the primary worktree:
 
 ```shell
 git switch main
-git merge --squash agent/<name>/<feature>
+git merge --squash <feature-branch-name>
 git commit -m "Add <feature>"
 ```
 
@@ -122,7 +124,7 @@ for cleanup. Do not run integrations into `main` concurrently.
 Report:
 
 ```text
-Branch: agent/<name>/<feature>
+Branch: <feature-branch-name>
 Worktree: /absolute/path/to/worktree
 Commit: <commit>
 Tests and linting: passed or failed
