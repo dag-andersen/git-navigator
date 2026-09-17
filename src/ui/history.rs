@@ -81,9 +81,9 @@ pub(crate) fn visual_index(app: &App, selected_commit: Option<usize>) -> Option<
 
 fn node(active: bool) -> Span<'static> {
     if active {
-        Span::styled("● ", Style::new().fg(Color::LightGreen).bold())
+        Span::styled("○ ", Style::new().fg(Color::LightGreen).bold())
     } else {
-        Span::styled("● ", Style::new().fg(Color::Cyan))
+        Span::styled("○ ", Style::new().fg(Color::Cyan))
     }
 }
 
