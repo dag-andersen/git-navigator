@@ -2,8 +2,8 @@ use super::{
     App, DiffLayout, Focus, SearchState, diff_row_at, diff_row_at_position, first_diff_row,
     first_file_row_in, history_list_index, mouse_focus,
 };
-use arboard::Clipboard;
 use crate::editor;
+use arboard::Clipboard;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     layout::{Position, Rect},
