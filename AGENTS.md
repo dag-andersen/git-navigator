@@ -1,13 +1,32 @@
 # git-navigator development instructions
 
-This repository builds the `git-navigator` binary used from the global Cargo
-bin directory. After completing every feature request, bugfix, behavior change,
-or other implementation change in this repository, rebuild and install the
-updated binary before reporting completion.
+This repository builds the `git-navigator` binary installed in the global
+Cargo bin directory.
 
-## Required verification and installation
+## Hard rules
 
-Run these commands from the repository root after making changes:
+- Keep `main` checked out in the primary worktree. Use that worktree only for
+  integration.
+- Never implement, edit, or commit feature work on `main`.
+- Every task must use its own feature branch and linked worktree.
+- Store each worktree at `<repo-name>-worktrees/<branch-name>/code`, next to the
+  repository. Preserve slashes in the branch name as directories.
+- Commit every completed task before reporting completion. Do not leave
+  completed work only in the working tree.
+- Feature branch commits and pushes are allowed. Never push `main`, `master`,
+  `develop`, or `production` without explicit user permission.
+- Do not create a pull request or merge into `main` unless explicitly asked.
+- Do not modify unrelated files. Preserve unrelated changes and untracked files,
+  especially `test.txt`.
+- Do not use force push, hard reset, rebase, or cleanup commands without explicit
+  permission.
+- Do not edit another agent's worktree or branch.
+- Use a regular hyphen instead of an em dash in prose, comments, and commits.
+
+## Required verification
+
+Run the complete workflow from the repository root after every task that changes
+repository files:
 
 ```shell
 cargo fmt -- --check
@@ -18,174 +37,95 @@ codesign --force --sign - "$HOME/.cargo/bin/git-navigator"
 git-navigator --help
 ```
 
-The install command must update the global binary at:
+The install must update:
 
 ```text
 $HOME/.cargo/bin/git-navigator
 ```
 
-The ad-hoc code-signing step is required on macOS so the installed binary can
-be launched normally. If any verification, build, installation, signing, or
-smoke-test command fails, report the failure and do not claim that the global
-binary was updated.
+If any command fails, stop and report the failure. Do not report completion or
+claim that the global binary was updated.
 
-## Repository safeguards
+## Starting a task
 
-- Do not commit, push, or create pull requests unless explicitly requested.
-- When integrating a topic branch into `main`, never use a fast-forward merge. Use
-  either a regular merge commit with `git merge --no-ff <branch>` or a squash
-  merge with `git merge --squash <branch>` followed by `git commit`. If the user
-  does not specify which style they want, ask before merging.
-- Do not modify unrelated files.
-- Preserve unrelated untracked files, especially `test.txt`.
-- Do not remove or clean worktrees, generated files, or untracked files without
-  explicit confirmation.
-- Use a regular hyphen instead of an em dash in prose, comments, and commits.
-
-## Multi-agent Git and worktree workflow
-
-Use one worktree and one feature branch per agent. Worktrees share Git history
-and branch references, but each worktree has its own checked-out files.
-
-### Worktree ownership
-
-- Reserve the primary worktree for integration and keep local `main` checked out
-  there.
-- Never check out local `main` in an agent worktree. Git normally prevents this,
-  and that protection must not be bypassed.
-- Each agent must work in its own linked worktree on its own branch.
-- Do not edit files, switch branches, or run cleanup commands in another
-  agent's worktree.
-- Do not run merges into `main` concurrently. Branch pointers are shared across
-  worktrees, so integration must be serialized.
-
-Recommended layout:
-
-```text
-project/                  # integration worktree, local main
-project-agent-a/          # agent/a/feature-name
-project-agent-b/          # agent/b/feature-name
-project-agent-c/          # agent/c/feature-name
-```
-
-### Starting an agent branch
-
-Before creating a new agent worktree, update the integration worktree from the
-remote using a fast-forward-only pull:
+Always start from an up-to-date local `main` in the primary worktree:
 
 ```shell
 git switch main
 git pull --ff-only
-git worktree add -b agent/<name>/<feature> ../project-<name> main
+repo_name="$(basename "$PWD")"
+branch="agent/<name>/<feature>"
+worktree="../${repo_name}-worktrees/${branch}/code"
+mkdir -p "$(dirname "$worktree")"
+git worktree add -b "$branch" "$worktree" main
 ```
 
-If the branch already exists, inspect it before adding or reusing its worktree:
+If the primary worktree is not clean, stop and preserve the existing changes.
+Do not stash, overwrite, or discard them. If the branch or worktree already
+exists, inspect it and reuse it only when continuing that same task.
+
+Perform all implementation work in the new worktree. When the task is complete:
+
+1. Commit only the files related to the task.
+2. Run the complete required verification workflow in the feature worktree.
+3. Push the feature branch if needed.
+4. Report the branch, worktree, commit, and verification result.
+5. Wait for an explicit request before merging into `main`.
+
+## Merging into main
+
+An explicit request to merge authorizes the integration commit, but not a push
+to `main`. Use a squash merge by default unless the user requests a regular
+merge commit. Never use a fast-forward merge.
+
+Before changing `main`:
+
+1. Confirm the feature worktree and primary worktree are clean.
+2. Update `main` in the primary worktree:
+
+   ```shell
+   git switch main
+   git pull --ff-only
+   ```
+
+3. In the feature worktree, merge the updated local `main` into the feature
+   branch:
+
+   ```shell
+   git merge main
+   ```
+
+4. Resolve conflicts in the feature worktree, review the result, and commit the
+   merge if Git requires it.
+5. Run the complete required verification workflow again in the feature
+   worktree. Stop if any command fails.
+6. Confirm the feature worktree is clean.
+
+Then integrate from the primary worktree:
 
 ```shell
-git worktree list
-git status --short --branch
-git log --oneline --decorate -10
+git switch main
+git merge --squash agent/<name>/<feature>
+git commit -m "Add <feature>"
 ```
 
-Never create a feature branch from a stale local `main` when a newer remote
-`main` is available.
+Run the complete required verification workflow again on the resulting `main`.
+If it fails, stop, report the failure, and do not push `main`.
 
-### Agent branch rules
+Do not remove the feature worktree or branch unless the user explicitly asks
+for cleanup. Do not run integrations into `main` concurrently.
 
-- Agents may commit changes only to their assigned feature branch.
-- Agents must not commit directly to `main`.
-- Agents must not merge, rebase, reset, or force-push another agent's branch
-  without explicit authorization from the user. An explicit request to merge a
-  completed feature into `main` authorizes the integration owner to perform the
-  merge workflow below.
-- Agents must not force-push any branch unless explicitly confirmed.
-- Keep commits focused and do not include unrelated changes.
-- Before handoff, run the repository's required verification commands.
-- When explicitly moving uncommitted changes between the integration worktree
-  and a feature worktree, preserve them in the destination before restoring or
-  removing them from the source. No additional permission is required for that
-  transfer.
-- In a feature branch or feature worktree, no additional permission is required
-  to delete uncommitted files created as part of the feature or to remove the
-  feature worktree during authorized cleanup. Never delete committed files or
-  another agent's files without explicit authorization.
+## Completion report
 
-When a feature is ready, report:
+Report:
 
 ```text
 Branch: agent/<name>/<feature>
 Worktree: /absolute/path/to/worktree
 Commit: <commit>
 Tests and linting: passed or failed
+Release installation: passed or failed
+macOS code signing: passed or failed
+git-navigator --help: passed or failed
 Conflicts with current main: known or none
 ```
-
-### Keeping active branches current
-
-When another feature is merged into `main`, existing agent worktrees do not
-update automatically. Their files and branch commits remain unchanged until
-they explicitly synchronize.
-
-Before integration, update an active feature branch with the latest `main` and
-resolve conflicts in that feature worktree:
-
-```shell
-git fetch origin
-git merge main
-```
-
-Use `git rebase main` only when explicitly requested. Do not rewrite a branch
-that has already been shared without confirmation.
-
-### Integrating a completed feature
-
-Only the integration owner should merge a feature into `main`. When the user
-explicitly asks to merge a completed feature into `main`, use a squash merge by
-default unless the user requests a different non-fast-forward strategy.
-
-Before each integration:
-
-1. Confirm the feature worktree is clean and identify its branch and commits.
-2. Confirm the integration worktree is clean except for known, preserved user
-   changes.
-3. Update local `main` with `git pull --ff-only`.
-4. In the feature worktree, ensure the feature branch includes the current
-   `main` and resolve any conflicts there. Use `git merge main`; use `git rebase
-   main` only when explicitly requested.
-5. Verify that the squash merge can apply cleanly before changing `main`, for
-   example with `git merge-tree --write-tree main agent/<name>/<feature>`.
-6. Run the required tests and linting in the feature worktree.
-7. In the integration worktree, squash-merge the feature into `main` and create
-   the commit.
-8. Run the full verification and installation steps again from `main`.
-9. After successful verification, remove the merged feature worktree and branch
-   when the user's merge request explicitly includes cleanup permission. If it
-   does not, ask for confirmation immediately before deleting them.
-
-For a squash merge:
-
-```shell
-git switch main
-git pull --ff-only
-git merge --squash agent/<name>/<feature>
-git commit -m "Add <feature>"
-```
-
-Before cleanup, inspect the final state and ensure the feature worktree is no
-longer needed. Cleanup, when authorized, should use:
-
-```shell
-git worktree remove /absolute/path/to/worktree
-git branch -d agent/<name>/<feature>
-```
-
-Never use `--force` for worktree or branch cleanup unless explicitly confirmed.
-
-## Completion report
-
-When reporting completed work, state whether the following succeeded:
-
-- Tests and linting
-- Release installation
-- macOS code signing
-- `git-navigator --help` smoke test
