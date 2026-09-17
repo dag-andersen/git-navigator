@@ -20,6 +20,7 @@ It is written in Rust with [Ratatui](https://ratatui.rs/).
 - Select Worktrees, History entries, and Files with mouse clicks
 - Highlight every Diff search match and show the current match position
 - Copy an absolute `path:line` location from the selected Diff row
+- Open the selected worktree in the default editor
 - Automatically refresh when files, commits, or worktrees change
 - Collapse and expand individual Diff hunks
 - Wrap long Diff lines when needed
@@ -340,6 +341,7 @@ Refresh attempts to preserve:
 | `s` | Toggle Split and Unified Diff layouts |
 | `w` | Toggle Diff line wrapping |
 | `c` | Copy the selected absolute `path:line` from Diff |
+| `o` | Open the selected worktree in the default editor |
 | `r` | Refresh Git state |
 | `d` | Clean up the selected eligible worktree after confirmation |
 | `Esc` | Cancel search, clear an applied list filter, or close a dialog |

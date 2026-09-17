@@ -3,6 +3,7 @@ use super::{
     first_file_row_in, history_list_index, mouse_focus,
 };
 use arboard::Clipboard;
+use crate::editor;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     layout::{Position, Rect},
@@ -41,6 +42,7 @@ impl App {
             KeyCode::Esc if self.focus != Focus::Diff => self.clear_filter(self.focus),
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('o') => self.open_selected_worktree(),
             KeyCode::Char('d') if self.focus == Focus::Worktrees => self.request_worktree_removal(),
             KeyCode::Char('h') if matches!(self.focus, Focus::Worktrees | Focus::Files) => {
                 self.toggle_history()
@@ -182,6 +184,24 @@ impl App {
             focus: self.focus,
             query: self.search_query(self.focus).to_string(),
         });
+    }
+
+    fn open_selected_worktree(&mut self) {
+        let Some(path) = self
+            .selected_worktree()
+            .map(|worktree| worktree.path.clone())
+        else {
+            self.set_error("No worktree is selected");
+            return;
+        };
+
+        match editor::open(&path) {
+            Ok(()) => self.set_info(format!("Opened {} in the default editor", path.display())),
+            Err(error) => self.set_error(format!(
+                "Could not open {} in the default editor: {error}",
+                path.display()
+            )),
+        }
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) {

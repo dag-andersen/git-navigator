@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod editor;
 mod git;
 mod model;
 mod ui;

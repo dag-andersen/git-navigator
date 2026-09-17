@@ -678,6 +678,7 @@ fn render_help(frame: &mut Frame) {
         help_line("c", "Copy selected file path and line"),
         help_line("/", "Search the focused panel"),
         help_line("r", "Refresh worktrees and changes"),
+        help_line("o", "Open the selected worktree in the default editor"),
         help_line("d", "Clean up the selected worktree"),
         help_line("? / Esc", "Close this help"),
         help_line("q", "Quit"),
