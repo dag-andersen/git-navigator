@@ -115,9 +115,9 @@ pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Lin
 
 fn base_node(app: &App, hash: &str) -> Option<char> {
     if app.local_base_hash.as_deref() == Some(hash) {
-        Some('◆')
+        Some('⬥')
     } else if app.remote_base_hash.as_deref() == Some(hash) {
-        Some('◇')
+        Some('⬦')
     } else {
         None
     }
