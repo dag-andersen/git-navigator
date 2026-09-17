@@ -95,7 +95,7 @@ pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Lin
             let color = if marker.is_some() {
                 Color::Red
             } else if active {
-                Color::Magenta
+                Color::Blue
             } else {
                 Color::Cyan
             };

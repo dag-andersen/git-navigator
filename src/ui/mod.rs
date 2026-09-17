@@ -1237,6 +1237,6 @@ mod tests {
         assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
         assert_eq!(line.spans[1].style.fg, Some(Color::DarkGray));
         assert_eq!(line.spans[2].style.fg, Some(Color::DarkGray));
-        assert_eq!(line.spans[3].style.fg, Some(Color::Magenta));
+        assert_eq!(line.spans[3].style.fg, Some(Color::Blue));
     }
 }
