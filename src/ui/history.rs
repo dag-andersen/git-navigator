@@ -92,13 +92,14 @@ pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Lin
     let graph_style = Style::new().fg(Color::DarkGray);
     for character in graph.chars() {
         let style = if character == '●' {
-            Style::new()
-                .fg(if active {
-                    Color::LightGreen
-                } else {
-                    Color::Cyan
-                })
-                .bold()
+            let color = if marker.is_some() {
+                Color::Red
+            } else if active {
+                Color::LightGreen
+            } else {
+                Color::Cyan
+            };
+            Style::new().fg(color).bold()
         } else {
             graph_style
         };
@@ -115,9 +116,9 @@ pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Lin
 
 fn base_node(app: &App, hash: &str) -> Option<char> {
     if app.local_base_hash.as_deref() == Some(hash) {
-        Some('⬥')
+        Some('■')
     } else if app.remote_base_hash.as_deref() == Some(hash) {
-        Some('⬦')
+        Some('□')
     } else {
         None
     }
