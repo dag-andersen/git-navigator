@@ -1,7 +1,9 @@
 use ratatui::layout::{Position, Rect};
-use unicode_width::UnicodeWidthChar;
 
-use crate::model::{ChangedFile, DiffLayout, DiffRowKind};
+use crate::{
+    diff_geometry::{content_width, row_height},
+    model::{ChangedFile, DiffLayout},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PositionState {
@@ -18,8 +20,7 @@ pub(crate) fn first_row(
 ) -> Option<usize> {
     selected
         .and_then(|row| tree.get(row))
-        .and_then(|row| row.file_index)
-        .and_then(|index| files.get(index))
+        .and_then(|row| files.iter().find(|file| file.path == row.path))
         .filter(|file| !file.hunks.is_empty())
         .map(|_| 0)
 }
@@ -116,81 +117,4 @@ pub(crate) fn row_at_position(
         }
     }
     None
-}
-
-pub(crate) fn content_width(area: Rect, layout: DiffLayout) -> usize {
-    let available = area.width.saturating_sub(2 + 10 + 3 + 1);
-    match layout {
-        DiffLayout::Split => usize::from(available / 2).max(1),
-        DiffLayout::Unified => usize::from(available).max(1),
-    }
-}
-
-fn row_height(
-    row: &crate::model::DiffRow,
-    layout: DiffLayout,
-    line_wrap: bool,
-    width: usize,
-) -> u16 {
-    let text_width = match layout {
-        DiffLayout::Split => width,
-        DiffLayout::Unified => width.saturating_sub(2).max(1),
-    };
-    let line_count = |text: Option<&str>, width: usize| {
-        if !line_wrap {
-            return 1;
-        }
-        expand_tabs(text.unwrap_or_default(), 4)
-            .split('\n')
-            .map(|line| wrapped_line_count(line, width))
-            .sum::<usize>()
-            .max(1) as u16
-    };
-    match layout {
-        DiffLayout::Split => line_count(row.old_text.as_deref(), text_width)
-            .max(line_count(row.new_text.as_deref(), text_width)),
-        DiffLayout::Unified => match row.kind {
-            DiffRowKind::Modified => line_count(row.old_text.as_deref(), text_width)
-                .saturating_add(line_count(row.new_text.as_deref(), text_width)),
-            _ => line_count(
-                row.new_text.as_deref().or(row.old_text.as_deref()),
-                text_width,
-            ),
-        },
-    }
-}
-
-fn wrapped_line_count(text: &str, width: usize) -> usize {
-    text.split('\n')
-        .map(|line| {
-            let mut current_width = 0;
-            let mut count = 1;
-            for character in line.chars() {
-                let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-                if current_width > 0 && current_width + character_width > width {
-                    count += 1;
-                    current_width = 0;
-                }
-                current_width += character_width;
-            }
-            count
-        })
-        .sum::<usize>()
-        .max(1)
-}
-
-pub(crate) fn expand_tabs(text: &str, tab_width: usize) -> String {
-    let mut expanded = String::with_capacity(text.len());
-    let mut column = 0;
-    for character in text.chars() {
-        if character == '\t' {
-            let spaces = tab_width - column % tab_width;
-            expanded.extend(std::iter::repeat_n(' ', spaces));
-            column += spaces;
-        } else {
-            expanded.push(character);
-            column += UnicodeWidthChar::width(character).unwrap_or(0);
-        }
-    }
-    expanded
 }

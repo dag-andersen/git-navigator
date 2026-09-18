@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     app::App,
-    model::{Commit, HistoryRow},
+    model::{Commit, HistoryRow, HistorySelection},
 };
 
 pub(crate) fn display_rows(app: &App) -> Vec<HistoryRow> {
@@ -20,7 +20,7 @@ fn display_rows_for(
 ) -> Vec<HistoryRow> {
     let mut rows = Vec::new();
     let mut newer_parents = HashSet::new();
-    for (index, commit) in commits.iter().enumerate() {
+    for commit in commits {
         rows.extend(
             commit
                 .graph
@@ -41,7 +41,9 @@ fn display_rows_for(
                 connected: newer_parents.contains(commit.hash.as_str()),
             });
         }
-        rows.push(HistoryRow::Commit { index });
+        rows.push(HistoryRow::Commit {
+            hash: commit.hash.clone(),
+        });
         newer_parents.extend(commit.parents.iter().map(String::as_str));
     }
     if !rows.iter().any(|row| matches!(row, HistoryRow::Wip { .. })) {
@@ -56,36 +58,52 @@ fn display_rows_for(
 }
 
 pub(crate) fn selection_after_refresh(
-    wip_selected: bool,
-    selected_hash: Option<&str>,
+    selection: Option<&HistorySelection>,
     commits: &[Commit],
-) -> Option<usize> {
-    if wip_selected {
-        return Some(0);
+) -> Option<HistorySelection> {
+    match selection {
+        Some(HistorySelection::Wip) => Some(HistorySelection::Wip),
+        Some(HistorySelection::Commit { hash })
+            if commits.iter().any(|commit| commit.hash == *hash) =>
+        {
+            Some(HistorySelection::Commit { hash: hash.clone() })
+        }
+        _ => Some(HistorySelection::Wip),
     }
-    selected_hash
-        .and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
-        .map(|index| index + 1)
-        .or(Some(0))
 }
 
 pub(crate) fn list_index(app: &App, visible_row: usize) -> Option<usize> {
     match display_rows(app).get(visible_row + app.history_state.offset())? {
         HistoryRow::Wip { .. } => Some(0),
-        HistoryRow::Commit { index } => Some(index + 1),
+        HistoryRow::Commit { hash } => app
+            .commits
+            .iter()
+            .position(|commit| commit.hash == *hash)
+            .map(|index| index + 1),
         HistoryRow::Graph(_) | HistoryRow::BranchLabel { .. } => None,
     }
 }
 
-pub(crate) fn selectable_indices(app: &App) -> Vec<usize> {
+pub(crate) fn selectable_selections(app: &App) -> Vec<HistorySelection> {
     display_rows(app)
         .into_iter()
         .filter_map(|row| match row {
-            HistoryRow::Wip { .. } => Some(0),
-            HistoryRow::Commit { index } => Some(index + 1),
+            HistoryRow::Wip { .. } => Some(HistorySelection::Wip),
+            HistoryRow::Commit { hash } => Some(HistorySelection::Commit { hash }),
             HistoryRow::Graph(_) | HistoryRow::BranchLabel { .. } => None,
         })
         .collect()
+}
+
+pub(crate) fn visual_index(app: &App, selection: Option<&HistorySelection>) -> Option<usize> {
+    let target = selection?;
+    display_rows(app).iter().position(|row| match row {
+        HistoryRow::Wip { .. } => matches!(target, HistorySelection::Wip),
+        HistoryRow::Commit { hash } => {
+            matches!(target, HistorySelection::Commit { hash: selected } if selected == hash)
+        }
+        HistoryRow::Graph(_) | HistoryRow::BranchLabel { .. } => false,
+    })
 }
 
 #[cfg(test)]
@@ -115,7 +133,7 @@ mod tests {
                     names: vec!["feature".into()],
                     connected: false,
                 },
-                HistoryRow::Commit { index: 0 },
+                HistoryRow::Commit { hash: "tip".into() },
             ]
         );
     }

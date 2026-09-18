@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod diff_geometry;
 mod editor;
 mod git;
 mod model;

@@ -19,13 +19,14 @@ use ratatui::{
 
 use crate::{
     app::{App, Focus, PanelLayout, StatusKind},
-    model::{ChangeMode, ChangedFile, DiffLayout},
+    diff_geometry::effective_layout,
+    model::ChangeMode,
 };
 
 #[cfg(test)]
-use diff::{
-    diff_content_width, display_text, highlighted_spans, unified_modified_lines_with_search,
-};
+use crate::diff_geometry::{content_width as diff_content_width, display_text};
+#[cfg(test)]
+use diff::{highlighted_spans, unified_modified_lines_with_search};
 #[cfg(test)]
 use files::file_style;
 #[cfg(test)]
@@ -203,10 +204,6 @@ pub fn interaction_areas(area: Rect, app: &mut App) -> [Rect; 3] {
 
 fn render_history(frame: &mut Frame, app: &mut App, area: Rect) {
     history::render(frame, app, area);
-}
-
-pub(crate) fn history_visual_index(app: &App, selected_commit: Option<usize>) -> Option<usize> {
-    history::visual_index(app, selected_commit)
 }
 
 #[cfg(test)]
@@ -401,7 +398,7 @@ fn scrollbar_position(offset: usize, content_length: usize, viewport_length: usi
 fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let effective_layout = app
         .selected_file()
-        .map(|file| effective_diff_layout(file, app.diff_layout))
+        .map(|file| effective_layout(file, app.diff_layout))
         .unwrap_or(app.diff_layout);
     let automatic_layout = effective_layout != app.diff_layout;
     let title = app
@@ -493,10 +490,6 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     )
     .block(block);
     frame.render_stateful_widget(table, area, &mut app.diff_state);
-}
-
-fn effective_diff_layout(file: &ChangedFile, preferred: DiffLayout) -> DiffLayout {
-    diff::effective_layout(file, preferred)
 }
 
 fn directory_name(path: &Path) -> String {
@@ -768,7 +761,8 @@ mod tests {
 
     use super::*;
     use crate::model::{
-        DiffHunk, DiffLayout, DiffRow, DiffRowKind, DiffView, FileStatus, HunkKind, Worktree,
+        ChangedFile, DiffHunk, DiffLayout, DiffRow, DiffRowKind, DiffView, FileStatus,
+        FileTreeRowKind, HistorySelection, HunkKind, Worktree,
     };
 
     #[test]
@@ -972,14 +966,14 @@ mod tests {
         ] {
             let file = ChangedFile::empty("file".into(), status);
             assert_eq!(
-                effective_diff_layout(&file, DiffLayout::Split),
+                effective_layout(&file, DiffLayout::Split),
                 DiffLayout::Unified
             );
         }
 
         let modified = ChangedFile::empty("file".into(), FileStatus::Modified);
         assert_eq!(
-            effective_diff_layout(&modified, DiffLayout::Split),
+            effective_layout(&modified, DiffLayout::Split),
             DiffLayout::Split
         );
     }
@@ -1064,7 +1058,7 @@ mod tests {
             file_tree: vec![crate::model::FileTreeRow {
                 label: "└── src/main.rs".into(),
                 path: std::path::PathBuf::from("src/main.rs"),
-                file_index: Some(0),
+                kind: FileTreeRowKind::File,
             }],
             worktree_state,
             history_state: ListState::default(),
@@ -1083,7 +1077,8 @@ mod tests {
             remote_base_hash: None,
             branch_tips: std::collections::HashMap::new(),
             history_head_hash: None,
-            selected_commit: None,
+            history_selection: None,
+            selected_file_path: Some(PathBuf::from("src/main.rs")),
             history_preferred_file: None,
         };
         app.worktrees.extend((1..=3).map(|index| Worktree {
@@ -1226,16 +1221,19 @@ mod tests {
             remote_base_hash: None,
             branch_tips: std::collections::HashMap::new(),
             history_head_hash: None,
-            selected_commit: Some(2),
+            history_selection: Some(HistorySelection::Commit {
+                hash: "middle".into(),
+            }),
+            selected_file_path: None,
             history_preferred_file: None,
         };
 
-        assert!(!history_commit_is_in_branch_diff(&app, 0));
-        assert!(history_commit_is_in_branch_diff(&app, 1));
-        assert!(!history_commit_is_in_branch_diff(&app, 2));
-        assert!(!history_commit_is_in_branch_diff(&app, 3));
+        assert!(!history_commit_is_in_branch_diff(&app, "head"));
+        assert!(history_commit_is_in_branch_diff(&app, "middle"));
+        assert!(!history_commit_is_in_branch_diff(&app, "base"));
+        assert!(!history_commit_is_in_branch_diff(&app, "older"));
 
-        app.selected_commit = Some(0);
+        app.history_selection = Some(HistorySelection::Wip);
         app.history_range_commits.clear();
         assert!(!history_wip_is_in_branch_diff(&app));
     }

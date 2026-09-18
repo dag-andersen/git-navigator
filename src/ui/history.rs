@@ -6,8 +6,11 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, Focus, history::display_rows},
-    model::ChangeMode,
+    app::{
+        App, Focus,
+        history::{display_rows, visual_index},
+    },
+    model::{ChangeMode, HistorySelection},
 };
 
 const SELECTED: Style = Style::new()
@@ -17,7 +20,7 @@ const SELECTED: Style = Style::new()
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let rows = display_rows(app);
-    let selected = visual_index_for_rows(&rows, app.selected_commit);
+    let selected = visual_index(app, app.history_selection.as_ref());
     let items = items(app, rows);
     let branch = app
         .worktrees
@@ -65,11 +68,13 @@ fn items(app: &App, rows: Vec<crate::model::HistoryRow>) -> Vec<ListItem<'static
                 ));
                 ListItem::new(label)
             }
-            crate::model::HistoryRow::Commit { index } => {
-                let commit = &app.commits[index];
+            crate::model::HistoryRow::Commit { hash } => {
+                let Some(commit) = app.commits.iter().find(|commit| commit.hash == hash) else {
+                    return ListItem::new(Line::raw(""));
+                };
                 let graph = graph_line(
                     commit.graph.last().map(String::as_str).unwrap_or("●"),
-                    commit_is_in_branch_diff(app, index),
+                    commit_is_in_branch_diff(app, &commit.hash),
                     base_node(app, &commit.hash),
                 );
                 let mut line = graph;
@@ -84,24 +89,6 @@ fn items(app: &App, rows: Vec<crate::model::HistoryRow>) -> Vec<ListItem<'static
             }
         })
         .collect()
-}
-
-pub(crate) fn visual_index(app: &App, selected_commit: Option<usize>) -> Option<usize> {
-    let target = selected_commit?;
-    let rows = display_rows(app);
-    visual_index_for_rows(&rows, Some(target))
-}
-
-fn visual_index_for_rows(
-    rows: &[crate::model::HistoryRow],
-    selected_commit: Option<usize>,
-) -> Option<usize> {
-    let target = selected_commit?;
-    rows.iter().position(|row| match row {
-        crate::model::HistoryRow::Wip { .. } => target == 0,
-        crate::model::HistoryRow::Commit { index } => target == index + 1,
-        crate::model::HistoryRow::Graph(_) | crate::model::HistoryRow::BranchLabel { .. } => false,
-    })
 }
 
 pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Line<'static> {
@@ -152,15 +139,13 @@ fn base_node(app: &App, hash: &str) -> Option<char> {
 
 pub(crate) fn wip_is_in_branch_diff(app: &App) -> bool {
     app.mode == ChangeMode::Branch
-        && app.selected_commit == Some(0)
+        && app.history_selection == Some(HistorySelection::Wip)
         && !app.history_range_commits.is_empty()
 }
 
-pub(crate) fn commit_is_in_branch_diff(app: &App, commit_index: usize) -> bool {
+pub(crate) fn commit_is_in_branch_diff(app: &App, hash: &str) -> bool {
     if app.mode != ChangeMode::Branch {
         return false;
     }
-    app.commits
-        .get(commit_index)
-        .is_some_and(|commit| app.history_range_commits.contains(&commit.hash))
+    app.history_range_commits.contains(hash)
 }

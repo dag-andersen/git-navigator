@@ -4,7 +4,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::model::{ChangedFile, FileTreeRow};
+use crate::model::{ChangedFile, FileTreeRow, FileTreeRowKind};
 
 use super::moved_selection;
 
@@ -16,7 +16,7 @@ pub(crate) fn first_file_row_in(tree: &[FileTreeRow], visible: &[usize]) -> Opti
     visible
         .iter()
         .copied()
-        .find(|index| tree[*index].file_index.is_some())
+        .find(|index| !tree[*index].is_directory())
 }
 
 pub(crate) fn moved_visible_file_selection(
@@ -48,12 +48,12 @@ struct Directory {
 
 enum Node {
     Directory(Directory),
-    File(usize),
+    File,
 }
 
 pub(crate) fn build_tree(files: &[ChangedFile]) -> Vec<FileTreeRow> {
     let mut root = Directory::default();
-    for (file_index, file) in files.iter().enumerate() {
+    for file in files {
         let components: Vec<OsString> = file
             .path
             .components()
@@ -62,7 +62,7 @@ pub(crate) fn build_tree(files: &[ChangedFile]) -> Vec<FileTreeRow> {
                 _ => None,
             })
             .collect();
-        insert(&mut root, &components, file_index);
+        insert(&mut root, &components);
     }
 
     let mut rows = Vec::new();
@@ -70,14 +70,12 @@ pub(crate) fn build_tree(files: &[ChangedFile]) -> Vec<FileTreeRow> {
     rows
 }
 
-fn insert(directory: &mut Directory, components: &[OsString], file_index: usize) {
+fn insert(directory: &mut Directory, components: &[OsString]) {
     let Some((name, remainder)) = components.split_first() else {
         return;
     };
     if remainder.is_empty() {
-        directory
-            .children
-            .insert(name.clone(), Node::File(file_index));
+        directory.children.insert(name.clone(), Node::File);
         return;
     }
 
@@ -86,7 +84,7 @@ fn insert(directory: &mut Directory, components: &[OsString], file_index: usize)
         .entry(name.clone())
         .or_insert_with(|| Node::Directory(Directory::default()));
     if let Node::Directory(child) = node {
-        insert(child, remainder, file_index);
+        insert(child, remainder);
     }
 }
 
@@ -107,9 +105,9 @@ fn flatten(
                 name.to_string_lossy(),
             ),
             path: path.clone(),
-            file_index: match node {
-                Node::Directory(_) => None,
-                Node::File(index) => Some(*index),
+            kind: match node {
+                Node::Directory(_) => FileTreeRowKind::Directory,
+                Node::File => FileTreeRowKind::File,
             },
         });
 
@@ -137,11 +135,12 @@ pub(crate) fn filtered_tree(
         .iter()
         .enumerate()
         .filter(|(_, row)| {
-            row.file_index.is_some_and(|file_index| {
+            row.kind == FileTreeRowKind::File && {
                 files
-                    .get(file_index)
+                    .iter()
+                    .find(|file| file.path == row.path)
                     .is_some_and(|file| super::fuzzy_match(query, &file.path.display().to_string()))
-            })
+            }
         })
         .map(|(row_index, _)| row_index)
         .collect();
@@ -149,9 +148,8 @@ pub(crate) fn filtered_tree(
     tree.iter()
         .enumerate()
         .filter(|(row_index, row)| {
-            row.file_index
-                .is_some_and(|_| matching_files.contains(row_index))
-                || row.file_index.is_none()
+            (row.kind == FileTreeRowKind::File && matching_files.contains(row_index))
+                || row.kind == FileTreeRowKind::Directory
                     && matching_files
                         .iter()
                         .any(|file_index| tree[*file_index].path.starts_with(&row.path))

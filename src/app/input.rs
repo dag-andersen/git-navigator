@@ -1,7 +1,8 @@
 use super::{
-    App, DiffLayout, Focus, SearchState, diff_row_at, diff_row_at_position, first_diff_row,
-    first_file_row_in, history_list_index, mouse_focus,
+    App, Focus, SearchState, diff_row_at, diff_row_at_position, first_diff_row, first_file_row_in,
+    history_list_index, mouse_focus,
 };
+use crate::diff_geometry::effective_layout;
 use crate::editor;
 use arboard::Clipboard;
 use ratatui::{
@@ -135,14 +136,7 @@ impl App {
 
     fn diff_row_at_position(&self, position: Position, area: Rect) -> Option<usize> {
         let file = self.selected_file()?;
-        let effective_layout = match file.status {
-            crate::model::FileStatus::Added
-            | crate::model::FileStatus::Deleted
-            | crate::model::FileStatus::Untracked => DiffLayout::Unified,
-            crate::model::FileStatus::Modified
-            | crate::model::FileStatus::Renamed
-            | crate::model::FileStatus::Conflicted => self.diff_layout,
-        };
+        let effective_layout = effective_layout(file, self.diff_layout);
         diff_row_at_position(
             file,
             effective_layout,
@@ -291,9 +285,12 @@ impl App {
                     .file_state
                     .selected()
                     .filter(|selected| visible.contains(selected))
-                    .filter(|selected| self.file_tree[*selected].file_index.is_some())
+                    .filter(|selected| !self.file_tree[*selected].is_directory())
                     .or_else(|| first_file_row_in(&self.file_tree, &visible));
-                self.file_state.select(selected);
+                let selected_path = selected
+                    .and_then(|row| self.file_tree.get(row))
+                    .map(|row| row.path.clone());
+                self.select_file_path(selected_path);
                 self.diff_state
                     .select(first_diff_row(&self.files, &self.file_tree, selected));
             }

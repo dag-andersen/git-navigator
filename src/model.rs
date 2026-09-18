@@ -85,6 +85,12 @@ pub struct Commit {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistorySelection {
+    Wip,
+    Commit { hash: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryRow {
     Wip {
         graph: String,
@@ -96,7 +102,7 @@ pub enum HistoryRow {
         connected: bool,
     },
     Commit {
-        index: usize,
+        hash: String,
     },
 }
 
@@ -131,12 +137,18 @@ pub struct ChangedFile {
 pub struct FileTreeRow {
     pub label: String,
     pub path: PathBuf,
-    pub file_index: Option<usize>,
+    pub kind: FileTreeRowKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileTreeRowKind {
+    Directory,
+    File,
 }
 
 impl FileTreeRow {
     pub fn is_directory(&self) -> bool {
-        self.file_index.is_none()
+        self.kind == FileTreeRowKind::Directory
     }
 }
 

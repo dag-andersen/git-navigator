@@ -1,23 +1,13 @@
+use crate::diff_geometry::{content_width, display_text};
+use crate::model::{ChangeMode, ChangedFile, DiffLayout, DiffRow, DiffRowKind, HunkKind};
 use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Cell, Row, Table},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-use crate::model::{
-    ChangeMode, ChangedFile, DiffLayout, DiffRow, DiffRowKind, FileStatus, HunkKind,
-};
 
 const SEARCH_MATCH_BG: Color = Color::Rgb(100, 80, 0);
-
-pub(crate) fn effective_layout(file: &ChangedFile, preferred: DiffLayout) -> DiffLayout {
-    match file.status {
-        FileStatus::Added | FileStatus::Deleted | FileStatus::Untracked => DiffLayout::Unified,
-        FileStatus::Modified | FileStatus::Renamed | FileStatus::Conflicted => preferred,
-    }
-}
 
 pub(crate) fn render(
     file: &ChangedFile,
@@ -108,7 +98,7 @@ fn render_row(
     search_query: &str,
     area: Rect,
 ) -> Row<'static> {
-    let content_width = diff_content_width(area, layout);
+    let content_width = content_width(area, layout);
     let (old_style, new_style) = diff_styles(row.kind, mode, hunk_kind);
     match layout {
         DiffLayout::Split => {
@@ -344,56 +334,6 @@ fn number_lines(
     lines.extend((1..own_height).map(|_| Line::raw("")));
     lines.extend((0..trailing_blanks).map(|_| Line::raw("")));
     Text::from(lines)
-}
-
-pub(crate) fn diff_content_width(area: Rect, layout: DiffLayout) -> usize {
-    const BORDER_WIDTH: u16 = 2;
-    const COLUMN_SPACING: u16 = 3;
-    const HIGHLIGHT_SYMBOL_WIDTH: u16 = 1;
-    let available = area
-        .width
-        .saturating_sub(BORDER_WIDTH + 10 + COLUMN_SPACING + HIGHLIGHT_SYMBOL_WIDTH);
-    match layout {
-        DiffLayout::Split => usize::from(available / 2).max(1),
-        DiffLayout::Unified => usize::from(available).max(1),
-    }
-}
-
-pub(crate) fn display_text(text: Option<&str>, line_wrap: bool, width: usize) -> String {
-    let text = text.unwrap_or_default();
-    let expanded = expand_tabs(text, 4);
-    if !line_wrap || UnicodeWidthStr::width(expanded.as_str()) <= width {
-        return expanded;
-    }
-
-    let mut wrapped = String::new();
-    let mut current_width = 0;
-    for character in expanded.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if current_width > 0 && current_width + character_width > width {
-            wrapped.push('\n');
-            current_width = 0;
-        }
-        wrapped.push(character);
-        current_width += character_width;
-    }
-    wrapped
-}
-
-fn expand_tabs(text: &str, tab_width: usize) -> String {
-    let mut expanded = String::with_capacity(text.len());
-    let mut column = 0;
-    for character in text.chars() {
-        if character == '\t' {
-            let spaces = tab_width - column % tab_width;
-            expanded.extend(std::iter::repeat_n(' ', spaces));
-            column += spaces;
-        } else {
-            expanded.push(character);
-            column += UnicodeWidthChar::width(character).unwrap_or(0);
-        }
-    }
-    expanded
 }
 
 fn diff_styles(kind: DiffRowKind, mode: ChangeMode, hunk_kind: HunkKind) -> (Style, Style) {

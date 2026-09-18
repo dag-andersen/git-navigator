@@ -21,10 +21,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|index| {
             let tree_row = &app.file_tree[*index];
-            let Some(file) = tree_row
-                .file_index
-                .and_then(|file_index| app.files.get(file_index))
-            else {
+            let Some(file) = app.files.iter().find(|file| file.path == tree_row.path) else {
                 return ListItem::new(Line::styled(
                     app.file_tree_label(*index, &visible),
                     Style::new().fg(Color::Cyan).bold(),

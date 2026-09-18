@@ -12,7 +12,10 @@ use std::{
 
 use crate::{
     git,
-    model::{ChangeMode, ChangedFile, Commit, DiffLayout, DiffView, FileTreeRow, Worktree},
+    model::{
+        ChangeMode, ChangedFile, Commit, DiffLayout, DiffView, FileTreeRow, HistorySelection,
+        Worktree,
+    },
 };
 use anyhow::{Context, Result};
 use ratatui::widgets::{ListState, TableState};
@@ -36,6 +39,7 @@ use self::{
     history::{
         list_index as history_list_index,
         selection_after_refresh as history_selection_after_refresh,
+        visual_index as history_visual_index,
     },
     navigation::{mouse_focus, moved_selection, worktree_index},
     search::{diff_matches, fuzzy_match},
@@ -177,7 +181,8 @@ pub struct App {
     pub remote_base_hash: Option<String>,
     pub branch_tips: HashMap<String, Vec<String>>,
     pub history_head_hash: Option<String>,
-    pub selected_commit: Option<usize>,
+    pub history_selection: Option<HistorySelection>,
+    pub selected_file_path: Option<PathBuf>,
     pub history_preferred_file: Option<PathBuf>,
 }
 
@@ -235,10 +240,14 @@ impl App {
             file_state
                 .selected()
                 .and_then(|row| file_tree.get(row))
-                .and_then(|row| row.file_index)
-                .and_then(|index| files.get(index))
+                .and_then(|row| files.iter().find(|file| file.path == row.path))
                 .map(|file| file.path.clone())
         };
+        let selected_file_path = file_state
+            .selected()
+            .and_then(|row| file_tree.get(row))
+            .filter(|row| !row.is_directory())
+            .map(|row| row.path.clone());
 
         Ok(Self {
             directory,
@@ -275,7 +284,8 @@ impl App {
             remote_base_hash,
             branch_tips,
             history_head_hash,
-            selected_commit: (!has_linked_worktrees).then_some(0),
+            history_selection: (!has_linked_worktrees).then_some(HistorySelection::Wip),
+            selected_file_path,
             history_preferred_file,
         })
     }
@@ -296,18 +306,28 @@ impl App {
         if visible_position > self.commits.len() {
             return;
         }
-        let next = Some(visible_position);
-        if self.selected_commit == next {
+        let next = if visible_position == 0 {
+            HistorySelection::Wip
+        } else {
+            let Some(commit) = self.commits.get(visible_position - 1) else {
+                return;
+            };
+            HistorySelection::Commit {
+                hash: commit.hash.clone(),
+            }
+        };
+        let next = Some(next);
+        if self.history_selection == next {
             return;
         }
-        self.selected_commit = next;
+        self.history_selection = next;
         self.history_state
-            .select(crate::ui::history_visual_index(self, next));
+            .select(history_visual_index(self, self.history_selection.as_ref()));
         if let Err(error) = self.update_history_range() {
             self.set_error(format!("Could not update history range: {error:#}"));
             return;
         }
-        if visible_position == 0 {
+        if matches!(self.history_selection, Some(HistorySelection::Wip)) {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
         } else {
@@ -323,7 +343,7 @@ impl App {
         if self.file_tree[row].is_directory() || Some(row) == self.file_state.selected() {
             return;
         }
-        self.file_state.select(Some(row));
+        self.select_file_path(Some(self.file_tree[row].path.clone()));
         if self.history_active() {
             self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
         }
@@ -359,7 +379,11 @@ impl App {
     }
 
     pub fn history_commit_selected(&self) -> bool {
-        self.history_active() && self.selected_commit.is_some_and(|index| index > 0)
+        self.history_active()
+            && matches!(
+                self.history_selection,
+                Some(HistorySelection::Commit { .. })
+            )
     }
 
     pub fn prepare_render(&mut self, history: bool, selected_commit: Option<&str>) -> Result<()> {
@@ -379,20 +403,23 @@ impl App {
                 git::base_tip_hashes(&worktree_path, &self.base);
             self.worktree_panel = WorktreePanel::History;
             self.focus = Focus::Worktrees;
-            self.selected_commit = match selected_commit {
-                Some(hash) => Some(
-                    self.commits
+            self.history_selection = match selected_commit {
+                Some(hash) => {
+                    let commit = self
+                        .commits
                         .iter()
-                        .position(|commit| commit.hash == hash || commit.short_hash == hash)
-                        .map(|index| index + 1)
+                        .find(|commit| commit.hash == hash || commit.short_hash == hash)
                         .with_context(|| {
                             format!("commit '{hash}' was not found in rendered history")
-                        })?,
-                ),
-                None => Some(0),
+                        })?;
+                    Some(HistorySelection::Commit {
+                        hash: commit.hash.clone(),
+                    })
+                }
+                None => Some(HistorySelection::Wip),
             };
             self.history_state
-                .select(crate::ui::history_visual_index(self, self.selected_commit));
+                .select(history_visual_index(self, self.history_selection.as_ref()));
             self.update_history_range()?;
             if self.history_commit_selected() {
                 self.reload_selected_commit();
@@ -451,11 +478,8 @@ impl App {
     }
 
     pub fn selected_file(&self) -> Option<&ChangedFile> {
-        self.file_state
-            .selected()
-            .and_then(|row| self.file_tree.get(row))
-            .and_then(|row| row.file_index)
-            .and_then(|index| self.files.get(index))
+        let path = self.selected_file_path.as_deref()?;
+        self.files.iter().find(|file| file.path == path)
     }
 
     pub fn diff_row_count(&self) -> usize {
@@ -470,10 +494,18 @@ impl App {
     }
 
     pub fn selected_file_index(&self) -> Option<usize> {
-        self.file_state
-            .selected()
-            .and_then(|row| self.file_tree.get(row))
-            .and_then(|row| row.file_index)
+        let path = self.selected_file_path.as_deref()?;
+        self.files.iter().position(|file| file.path == path)
+    }
+
+    fn select_file_path(&mut self, path: Option<PathBuf>) {
+        self.selected_file_path = path;
+        let row = self.selected_file_path.as_deref().and_then(|path| {
+            self.file_tree
+                .iter()
+                .position(|row| !row.is_directory() && row.path == path)
+        });
+        self.file_state.select(row);
     }
 
     pub fn selected_hunk_index(&self) -> Option<usize> {
@@ -556,7 +588,10 @@ impl App {
         if next == self.file_state.selected() {
             return;
         }
-        self.file_state.select(next);
+        let next_path = next
+            .and_then(|row| self.file_tree.get(row))
+            .map(|row| row.path.clone());
+        self.select_file_path(next_path);
         if self.history_active() {
             self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
         }
@@ -627,12 +662,7 @@ impl App {
             .map(|worktree| worktree.path.clone());
         let selected_file = self.selected_file().map(|file| file.path.clone());
         let diff_position = self.diff_position();
-        let history_wip_selected = self.history_active() && self.selected_commit == Some(0);
-        let selected_commit_hash = self
-            .selected_commit
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| self.commits.get(index))
-            .map(|commit| commit.hash.clone());
+        let history_selection = self.history_selection.clone();
 
         match git::discover_worktrees(&self.directory) {
             Ok(worktrees) => {
@@ -680,16 +710,13 @@ impl App {
                         self.local_base_hash = local_base_hash;
                         self.remote_base_hash = remote_base_hash;
                     }
-                    self.selected_commit = history_selection_after_refresh(
-                        history_wip_selected,
-                        selected_commit_hash.as_deref(),
-                        &self.commits,
-                    );
+                    self.history_selection =
+                        history_selection_after_refresh(history_selection.as_ref(), &self.commits);
                     if let Err(error) = self.update_history_range() {
                         self.set_error(format!("Could not update history range: {error:#}"));
                         return;
                     }
-                    if self.selected_commit == Some(0) {
+                    if self.history_selection == Some(HistorySelection::Wip) {
                         self.reload_files_with_position(
                             selected_file.as_deref(),
                             diff_position.as_ref(),
@@ -785,7 +812,7 @@ impl App {
         let Some(worktree) = self.selected_worktree() else {
             self.files.clear();
             self.file_tree.clear();
-            self.file_state.select(None);
+            self.select_file_path(None);
             self.diff_state.select(None);
             return;
         };
@@ -799,7 +826,7 @@ impl App {
                 .to_string();
             self.files.clear();
             self.file_tree.clear();
-            self.file_state.select(None);
+            self.select_file_path(None);
             self.diff_state.select(None);
             self.set_error(format!(
                 "Unavailable worktree: {reason}. Press d in the Worktrees pane to clean it up"
@@ -811,23 +838,22 @@ impl App {
             Ok(files) => {
                 self.files = files;
                 self.file_tree = build_file_tree(&self.files);
-                let selected = preferred_file
-                    .and_then(|path| {
-                        self.file_tree.iter().position(|row| {
-                            row.file_index
-                                .and_then(|index| self.files.get(index))
-                                .is_some_and(|file| file.path == path)
-                        })
-                    })
-                    .or_else(|| first_file_row(&self.file_tree));
-                self.file_state.select(selected);
+                let selected_path = preferred_file
+                    .filter(|path| self.files.iter().any(|file| file.path == *path))
+                    .map(Path::to_path_buf)
+                    .or_else(|| {
+                        first_file_row(&self.file_tree)
+                            .and_then(|row| self.file_tree.get(row))
+                            .map(|row| row.path.clone())
+                    });
+                self.select_file_path(selected_path);
                 self.restore_diff_position(diff_position);
                 self.status = None;
             }
             Err(error) => {
                 self.files.clear();
                 self.file_tree.clear();
-                self.file_state.select(None);
+                self.select_file_path(None);
                 self.diff_state.select(None);
                 self.set_error(format!("Could not load changes: {error:#}"));
             }
@@ -896,7 +922,7 @@ impl App {
                 return;
             }
             self.worktree_panel = WorktreePanel::Worktrees;
-            self.selected_commit = None;
+            self.history_selection = None;
             let preferred = self.history_preferred_file.take();
             self.reload_files(preferred.as_deref());
             return;
@@ -918,7 +944,7 @@ impl App {
                     git::base_tip_hashes(&worktree_path, &self.base);
                 self.local_base_hash = local_base_hash;
                 self.remote_base_hash = remote_base_hash;
-                self.selected_commit = Some(0);
+                self.history_selection = Some(HistorySelection::Wip);
                 self.worktree_panel = WorktreePanel::History;
                 if let Err(error) = self.update_history_range() {
                     self.set_error(format!("Could not update history range: {error:#}"));
@@ -932,25 +958,27 @@ impl App {
     }
 
     fn move_commit(&mut self, delta: isize) {
-        let selectable = history::selectable_indices(self);
-        let current = self
-            .selected_commit
-            .and_then(|selected| selectable.iter().position(|index| *index == selected));
+        let selectable = history::selectable_selections(self);
+        let current = self.history_selection.as_ref().and_then(|selected| {
+            selectable
+                .iter()
+                .position(|selection| selection == selected)
+        });
         let Some(next_position) = moved_selection(current, selectable.len(), delta) else {
             return;
         };
-        let next = selectable[next_position];
-        if Some(next) == self.selected_commit {
+        let next = selectable[next_position].clone();
+        if Some(next.clone()) == self.history_selection {
             return;
         }
-        self.selected_commit = Some(next);
+        self.history_selection = Some(next.clone());
         self.history_state
-            .select(crate::ui::history_visual_index(self, Some(next)));
+            .select(history_visual_index(self, self.history_selection.as_ref()));
         if let Err(error) = self.update_history_range() {
             self.set_error(format!("Could not update history range: {error:#}"));
             return;
         }
-        if next == 0 {
+        if next == HistorySelection::Wip {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
         } else {
@@ -974,13 +1002,9 @@ impl App {
             .selected_worktree()
             .map(|worktree| worktree.path.clone())
             .context("no worktree is selected")?;
-        let target = match self.selected_commit {
-            Some(0) => "HEAD".to_string(),
-            Some(index) => self
-                .commits
-                .get(index - 1)
-                .map(|commit| commit.hash.clone())
-                .context("selected history commit is not available")?,
+        let target = match &self.history_selection {
+            Some(HistorySelection::Wip) => "HEAD".to_string(),
+            Some(HistorySelection::Commit { hash }) => hash.clone(),
             None => return Ok(()),
         };
         self.history_range_commits =
@@ -989,36 +1013,43 @@ impl App {
     }
 
     fn load_selected_commit_files(&mut self) -> Result<()> {
-        let Some(commit_index) = self.selected_commit.and_then(|index| index.checked_sub(1)) else {
+        let Some(HistorySelection::Commit { hash }) = &self.history_selection else {
             anyhow::bail!("no historical commit is selected");
         };
         let worktree_path = self
             .selected_worktree()
             .map(|worktree| worktree.path.clone())
             .context("no worktree is selected")?;
+        let commit = self
+            .commits
+            .iter()
+            .find(|commit| commit.hash == *hash)
+            .context("selected history commit is not available")?;
         let files = git::load_commit_changes(
             &worktree_path,
-            &self.commits[commit_index],
+            commit,
             self.diff_view,
             self.mode,
             &self.base,
         )?;
         self.files = files;
         self.file_tree = build_file_tree(&self.files);
-        let selected = self
+        let selected_path = self
             .history_preferred_file
             .as_deref()
-            .and_then(|path| {
-                self.file_tree.iter().position(|row| {
-                    row.file_index
-                        .and_then(|index| self.files.get(index))
-                        .is_some_and(|file| file.path == path)
-                })
-            })
-            .or_else(|| first_file_row(&self.file_tree));
-        self.file_state.select(selected);
-        self.diff_state
-            .select(first_diff_row(&self.files, &self.file_tree, selected));
+            .filter(|path| self.files.iter().any(|file| file.path == *path))
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                first_file_row(&self.file_tree)
+                    .and_then(|row| self.file_tree.get(row))
+                    .map(|row| row.path.clone())
+            });
+        self.select_file_path(selected_path);
+        self.diff_state.select(first_diff_row(
+            &self.files,
+            &self.file_tree,
+            self.file_state.selected(),
+        ));
         Ok(())
     }
 
@@ -1062,7 +1093,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DiffHunk, DiffRow, DiffRowKind, FileStatus, HunkKind};
+    use crate::model::{DiffHunk, DiffRow, DiffRowKind, FileStatus, FileTreeRowKind, HunkKind};
     use ratatui::crossterm::event::{KeyEventKind, KeyEventState};
 
     #[test]
@@ -1153,8 +1184,9 @@ mod tests {
         app.file_tree = vec![FileTreeRow {
             label: "└── main.rs".into(),
             path: PathBuf::from("src/main.rs"),
-            file_index: Some(0),
+            kind: FileTreeRowKind::File,
         }];
+        app.selected_file_path = Some(PathBuf::from("src/main.rs"));
         app.file_state.select(Some(0));
         app.diff_state.select(Some(1));
         app.worktrees = vec![Worktree {
@@ -1233,8 +1265,9 @@ mod tests {
         app.file_tree = vec![FileTreeRow {
             label: "└── main.rs".into(),
             path: PathBuf::from("src/main.rs"),
-            file_index: Some(0),
+            kind: FileTreeRowKind::File,
         }];
+        app.selected_file_path = Some(PathBuf::from("src/main.rs"));
         app.file_state.select(Some(0));
         app.diff_state.select(Some(0));
         app.focus = Focus::Diff;
@@ -1291,8 +1324,9 @@ mod tests {
         app.file_tree = vec![FileTreeRow {
             label: "└── main.rs".into(),
             path: PathBuf::from("src/main.rs"),
-            file_index: Some(0),
+            kind: FileTreeRowKind::File,
         }];
+        app.selected_file_path = Some(PathBuf::from("src/main.rs"));
         app.worktree_state.select(Some(0));
         app.handle_key(key(KeyCode::Char('/')));
         app.handle_key(key(KeyCode::Right));
@@ -1366,17 +1400,17 @@ mod tests {
             FileTreeRow {
                 label: "src".into(),
                 path: PathBuf::from("src"),
-                file_index: None,
+                kind: FileTreeRowKind::Directory,
             },
             FileTreeRow {
                 label: "src/main.rs".into(),
                 path: PathBuf::from("src/main.rs"),
-                file_index: Some(0),
+                kind: FileTreeRowKind::File,
             },
             FileTreeRow {
                 label: "tests/test.rs".into(),
                 path: PathBuf::from("tests/test.rs"),
-                file_index: Some(1),
+                kind: FileTreeRowKind::File,
             },
         ];
         let visible = vec![0, 1, 2];
@@ -1445,22 +1479,22 @@ mod tests {
             FileTreeRow {
                 label: "src".into(),
                 path: PathBuf::from("src"),
-                file_index: None,
+                kind: FileTreeRowKind::Directory,
             },
             FileTreeRow {
                 label: "src/a.rs".into(),
                 path: PathBuf::from("src/a.rs"),
-                file_index: Some(0),
+                kind: FileTreeRowKind::File,
             },
             FileTreeRow {
                 label: "tests".into(),
                 path: PathBuf::from("tests"),
-                file_index: None,
+                kind: FileTreeRowKind::Directory,
             },
             FileTreeRow {
                 label: "tests/a.rs".into(),
                 path: PathBuf::from("tests/a.rs"),
-                file_index: Some(1),
+                kind: FileTreeRowKind::File,
             },
         ];
 
@@ -1701,11 +1735,13 @@ mod tests {
             subject: "commit".into(),
             graph: vec!["●".into()],
         }];
-        app.selected_commit = Some(1);
+        app.history_selection = Some(HistorySelection::Commit {
+            hash: "1234567890abcdef".into(),
+        });
 
         app.move_commit(-1);
 
-        assert_eq!(app.selected_commit, Some(0));
+        assert_eq!(app.history_selection, Some(HistorySelection::Wip));
         assert!(!app.history_commit_selected());
     }
 
@@ -1722,17 +1758,15 @@ mod tests {
             .history_preferred_file
             .as_deref()
             .and_then(|path| {
-                app.file_tree.iter().position(|row| {
-                    row.file_index
-                        .and_then(|index| app.files.get(index))
-                        .is_some_and(|file| file.path == path)
-                })
+                app.file_tree
+                    .iter()
+                    .position(|row| !row.is_directory() && row.path == path)
             })
             .or_else(|| first_file_row(&app.file_tree));
 
         assert_eq!(
-            selected.and_then(|row| app.file_tree[row].file_index),
-            Some(1)
+            selected.map(|row| app.file_tree[row].path.clone()),
+            Some(PathBuf::from("src/app.rs"))
         );
     }
 
@@ -1756,16 +1790,28 @@ mod tests {
         ];
 
         assert_eq!(
-            history_selection_after_refresh(true, None, &commits),
-            Some(0)
+            history_selection_after_refresh(Some(&HistorySelection::Wip), &commits),
+            Some(HistorySelection::Wip)
         );
         assert_eq!(
-            history_selection_after_refresh(false, Some("selected"), &commits),
-            Some(2)
+            history_selection_after_refresh(
+                Some(&HistorySelection::Commit {
+                    hash: "selected".into(),
+                }),
+                &commits,
+            ),
+            Some(HistorySelection::Commit {
+                hash: "selected".into(),
+            })
         );
         assert_eq!(
-            history_selection_after_refresh(false, Some("rewritten"), &commits),
-            Some(0)
+            history_selection_after_refresh(
+                Some(&HistorySelection::Commit {
+                    hash: "rewritten".into(),
+                }),
+                &commits,
+            ),
+            Some(HistorySelection::Wip)
         );
     }
 
@@ -1841,8 +1887,9 @@ mod tests {
         app.file_tree = vec![FileTreeRow {
             label: "└── main.rs".into(),
             path: PathBuf::from("src/main.rs"),
-            file_index: Some(0),
+            kind: FileTreeRowKind::File,
         }];
+        app.selected_file_path = Some(PathBuf::from("src/main.rs"));
         app.file_state.select(Some(0));
         app.diff_state.select(Some(0));
         app.focus = Focus::Diff;
@@ -1938,10 +1985,10 @@ mod tests {
         } else {
             WorktreePanel::History
         };
-        app.selected_commit = (!has_linked_worktrees).then_some(0);
+        app.history_selection = (!has_linked_worktrees).then_some(HistorySelection::Wip);
 
         assert!(app.history_active());
-        assert_eq!(app.selected_commit, Some(0));
+        assert_eq!(app.history_selection, Some(HistorySelection::Wip));
     }
 
     fn test_app() -> App {
@@ -1976,7 +2023,8 @@ mod tests {
             remote_base_hash: None,
             branch_tips: HashMap::new(),
             history_head_hash: None,
-            selected_commit: None,
+            history_selection: None,
+            selected_file_path: None,
             history_preferred_file: None,
         }
     }
