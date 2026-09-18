@@ -1224,13 +1224,13 @@ impl App {
             Some(HistorySelection::Commit { hash }) => hash.clone(),
             None => return Ok(()),
         };
-        let comparison_ref =
+        let comparison_ref: Option<&str> =
             if matches!(
                 self.history.selection,
                 Some(HistorySelection::Commit { .. })
             ) && git::is_ancestor(&worktree_path, &target, &self.repository.base)?
             {
-                git::history_branch_ref(&worktree_path, &target, &self.repository.base)?
+                Some(target.as_str())
             } else {
                 None
             };
@@ -1238,7 +1238,7 @@ impl App {
             &worktree_path,
             &target,
             &self.repository.base,
-            comparison_ref.as_deref(),
+            comparison_ref,
         )?;
         self.history.range_commits =
             git::history_range_commits_from_base(&worktree_path, &target, &comparison_base)?;

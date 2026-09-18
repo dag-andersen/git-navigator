@@ -89,38 +89,6 @@ pub fn is_ancestor(worktree: &Path, target: &str, base: &str) -> Result<bool> {
     )
 }
 
-pub fn history_branch_ref(worktree: &Path, target: &str, base: &str) -> Result<Option<String>> {
-    let base_ref = resolve_base_ref(worktree, base)?;
-    let base_refs = [
-        format!("refs/heads/{base_ref}"),
-        format!("refs/remotes/{base_ref}"),
-        format!("refs/remotes/origin/{base}"),
-    ];
-    let output = git_text(
-        worktree,
-        &[
-            "for-each-ref",
-            "--contains",
-            target,
-            "--format=%(refname)",
-            "refs/heads",
-            "refs/remotes",
-        ],
-    )?;
-    let references: Vec<&str> = output
-        .lines()
-        .map(str::trim)
-        .filter(|reference| {
-            !reference.is_empty() && !base_refs.iter().any(|base_ref| base_ref == reference)
-        })
-        .collect();
-    Ok(references
-        .iter()
-        .find(|reference| reference.starts_with("refs/heads/"))
-        .or_else(|| references.first())
-        .map(|reference| reference.to_string()))
-}
-
 pub fn history_comparison_base(
     worktree: &Path,
     target: &str,
