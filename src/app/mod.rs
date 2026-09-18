@@ -1219,8 +1219,14 @@ impl App {
             Some(HistorySelection::Commit { hash }) => hash.clone(),
             None => return Ok(()),
         };
-        self.history.range_commits =
-            git::history_range_commits(&worktree_path, &target, &self.repository.base)?;
+        let comparison_ref =
+            git::history_branch_ref(&worktree_path, &target, &self.repository.base)?;
+        self.history.range_commits = git::history_range_commits(
+            &worktree_path,
+            &target,
+            &self.repository.base,
+            comparison_ref.as_deref(),
+        )?;
         Ok(())
     }
 
@@ -1232,6 +1238,7 @@ impl App {
             .selected_worktree()
             .map(|worktree| worktree.path.clone())
             .context("no worktree is selected")?;
+        let comparison_ref = git::history_branch_ref(&worktree_path, hash, &self.repository.base)?;
         let commit = self
             .history
             .commits
@@ -1244,6 +1251,7 @@ impl App {
             self.changes.diff_view,
             self.changes.mode,
             &self.repository.base,
+            comparison_ref.as_deref(),
         )?;
         self.changes.install_files(files);
         let selected_path = self

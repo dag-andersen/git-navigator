@@ -67,15 +67,106 @@ pub fn branch_tips(worktree: &Path) -> Result<HashMap<String, Vec<String>>> {
     Ok(tips)
 }
 
-pub fn history_range_commits(worktree: &Path, target: &str, base: &str) -> Result<HashSet<String>> {
-    let base_ref = resolve_base_ref(worktree, base)?;
-    let output = git_text(worktree, &["rev-list", target, "--not", &base_ref])?;
+pub fn history_range_commits(
+    worktree: &Path,
+    target: &str,
+    base: &str,
+    comparison_ref: Option<&str>,
+) -> Result<HashSet<String>> {
+    let comparison_base = history_comparison_base(worktree, target, base, comparison_ref)?;
+    let output = git_text(worktree, &["rev-list", target, "--not", &comparison_base])?;
     Ok(output
         .lines()
         .map(str::trim)
         .filter(|hash| !hash.is_empty())
         .map(ToOwned::to_owned)
         .collect())
+}
+
+pub fn history_branch_ref(worktree: &Path, target: &str, base: &str) -> Result<Option<String>> {
+    let base_ref = resolve_base_ref(worktree, base)?;
+    let base_refs = [
+        format!("refs/heads/{base_ref}"),
+        format!("refs/remotes/{base_ref}"),
+        format!("refs/remotes/origin/{base}"),
+    ];
+    let exact_output = git_text(
+        worktree,
+        &[
+            "for-each-ref",
+            "--points-at",
+            target,
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let output = git_text(
+        worktree,
+        &[
+            "for-each-ref",
+            "--contains",
+            target,
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let references: Vec<&str> = exact_output
+        .lines()
+        .chain(output.lines())
+        .map(str::trim)
+        .filter(|reference| {
+            !reference.is_empty() && !base_refs.iter().any(|base_ref| base_ref == reference)
+        })
+        .collect();
+    Ok(references
+        .iter()
+        .find(|reference| reference.starts_with("refs/heads/"))
+        .or_else(|| references.first())
+        .map(|reference| reference.to_string()))
+}
+
+pub fn history_comparison_base(
+    worktree: &Path,
+    target: &str,
+    base: &str,
+    comparison_ref: Option<&str>,
+) -> Result<String> {
+    let base_ref = resolve_base_ref(worktree, base)?;
+    let comparison_ref = comparison_ref.unwrap_or(target);
+    let merges = git_text(
+        worktree,
+        &[
+            "log",
+            "--first-parent",
+            "--merges",
+            "--format=%H%x00%P",
+            &base_ref,
+        ],
+    )?;
+
+    for line in merges.lines() {
+        let Some((_merge, parents)) = line.split_once('\0') else {
+            continue;
+        };
+        let mut parents = parents.split_whitespace();
+        let Some(first_parent) = parents.next() else {
+            continue;
+        };
+        for second_parent in parents {
+            let ancestor = git_allow_failure(
+                worktree,
+                &["merge-base", "--is-ancestor", comparison_ref, second_parent],
+            )?;
+            if ancestor.status.success() {
+                return Ok(first_parent.to_string());
+            }
+        }
+    }
+
+    let output = git_text(worktree, &["merge-base", comparison_ref, &base_ref])?;
+    Ok(output.trim().to_string())
 }
 
 pub(crate) fn resolve_base_ref(worktree: &Path, base: &str) -> Result<String> {
@@ -194,7 +285,7 @@ mod tests {
             .trim()
             .to_string();
         assert!(
-            history_range_commits(repository.path(), "HEAD", "main")
+            history_range_commits(repository.path(), "HEAD", "main", None)
                 .expect("main history range should load")
                 .is_empty()
         );
@@ -208,10 +299,41 @@ mod tests {
             .trim()
             .to_string();
 
-        let range = history_range_commits(repository.path(), &head, "main")
+        let range = history_range_commits(repository.path(), &head, "main", None)
             .expect("history range should load");
         assert!(range.contains(&head));
         assert!(!range.contains(&base));
+    }
+
+    #[test]
+    fn uses_the_branch_divergence_after_the_branch_is_merged() {
+        let repository = TestRepository::new();
+        run_git(repository.path(), &["switch", "-c", "feature"]);
+        fs::write(repository.path().join("feature.txt"), "feature\n")
+            .expect("feature file should be writable");
+        run_git(repository.path(), &["add", "feature.txt"]);
+        run_git(repository.path(), &["commit", "-m", "feature commit"]);
+        let feature_commit = git_text(repository.path(), &["rev-parse", "HEAD"])
+            .expect("feature commit should resolve")
+            .trim()
+            .to_string();
+        run_git(repository.path(), &["switch", "main"]);
+        run_git(
+            repository.path(),
+            &["merge", "--no-ff", "feature", "-m", "merge feature"],
+        );
+
+        assert_eq!(
+            history_branch_ref(repository.path(), &feature_commit, "main")
+                .expect("branch ref should load")
+                .as_deref(),
+            Some("refs/heads/feature")
+        );
+
+        let range =
+            history_range_commits(repository.path(), &feature_commit, "main", Some("feature"))
+                .expect("merged branch range should load");
+        assert!(range.contains(&feature_commit));
     }
 
     #[test]
