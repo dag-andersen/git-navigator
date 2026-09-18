@@ -8,7 +8,7 @@ use ratatui::{
 use crate::{
     app::{
         App, Focus,
-        history::{display_rows, visual_index},
+        history::{HistoryRow, display_rows, visual_index},
     },
     model::{ChangeMode, HistorySelection},
 };
@@ -20,29 +20,33 @@ const SELECTED: Style = Style::new()
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let rows = display_rows(app);
-    let selected = visual_index(app, app.history_selection.as_ref());
+    let selected = visual_index(app, app.history.selection.as_ref());
     let items = items(app, rows);
     let branch = app
+        .repository
         .worktrees
         .iter()
         .find(|worktree| worktree.is_current)
         .map(|worktree| worktree.branch.as_str())
         .unwrap_or("detached HEAD");
-    let title = format!("History ({}) - {branch}", app.commits.len() + 1);
+    let title = format!("History ({}) - {branch}", app.history.commits.len() + 1);
     let list = List::new(items)
-        .block(super::pane_block(&title, app.focus == Focus::Worktrees))
+        .block(super::pane_block(
+            &title,
+            app.view.focus == Focus::Worktrees,
+        ))
         .highlight_style(SELECTED)
         .highlight_symbol("› ");
-    let mut state = app.history_state;
+    let mut state = app.history.list_state;
     state.select(selected);
     frame.render_stateful_widget(list, area, &mut state);
-    *app.history_state.offset_mut() = state.offset();
+    *app.history.list_state.offset_mut() = state.offset();
 }
 
-fn items(app: &App, rows: Vec<crate::model::HistoryRow>) -> Vec<ListItem<'static>> {
+fn items(app: &App, rows: Vec<HistoryRow>) -> Vec<ListItem<'static>> {
     rows.into_iter()
         .map(|row| match row {
-            crate::model::HistoryRow::Wip { graph } => {
+            HistoryRow::Wip { graph } => {
                 let mut line =
                     graph_line_with_marker(&graph, wip_is_in_branch_diff(app), Some('○'), None);
                 line.spans.extend([
@@ -51,10 +55,8 @@ fn items(app: &App, rows: Vec<crate::model::HistoryRow>) -> Vec<ListItem<'static
                 ]);
                 ListItem::new(line)
             }
-            crate::model::HistoryRow::Graph(graph) => {
-                ListItem::new(graph_line(&graph, false, None))
-            }
-            crate::model::HistoryRow::BranchLabel {
+            HistoryRow::Graph(graph) => ListItem::new(graph_line(&graph, false, None)),
+            HistoryRow::BranchLabel {
                 graph,
                 names,
                 connected,
@@ -68,8 +70,13 @@ fn items(app: &App, rows: Vec<crate::model::HistoryRow>) -> Vec<ListItem<'static
                 ));
                 ListItem::new(label)
             }
-            crate::model::HistoryRow::Commit { hash } => {
-                let Some(commit) = app.commits.iter().find(|commit| commit.hash == hash) else {
+            HistoryRow::Commit { hash } => {
+                let Some(commit) = app
+                    .history
+                    .commits
+                    .iter()
+                    .find(|commit| commit.hash == hash)
+                else {
                     return ListItem::new(Line::raw(""));
                 };
                 let graph = graph_line(
@@ -128,9 +135,9 @@ fn graph_line_with_marker(
 }
 
 fn base_node(app: &App, hash: &str) -> Option<char> {
-    if app.local_base_hash.as_deref() == Some(hash) {
+    if app.history.local_base_hash.as_deref() == Some(hash) {
         Some('■')
-    } else if app.remote_base_hash.as_deref() == Some(hash) {
+    } else if app.history.remote_base_hash.as_deref() == Some(hash) {
         Some('□')
     } else {
         None
@@ -138,14 +145,14 @@ fn base_node(app: &App, hash: &str) -> Option<char> {
 }
 
 pub(crate) fn wip_is_in_branch_diff(app: &App) -> bool {
-    app.mode == ChangeMode::Branch
-        && app.history_selection == Some(HistorySelection::Wip)
-        && !app.history_range_commits.is_empty()
+    app.changes.mode == ChangeMode::Branch
+        && app.history.selection == Some(HistorySelection::Wip)
+        && !app.history.range_commits.is_empty()
 }
 
 pub(crate) fn commit_is_in_branch_diff(app: &App, hash: &str) -> bool {
-    if app.mode != ChangeMode::Branch {
+    if app.changes.mode != ChangeMode::Branch {
         return false;
     }
-    app.history_range_commits.contains(hash)
+    app.history.range_commits.contains(hash)
 }

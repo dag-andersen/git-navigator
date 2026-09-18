@@ -55,22 +55,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let show_worktrees = app.has_linked_worktrees() || app.history_active();
     let [worktrees, files, diff] = panel_areas_for(
         body,
-        app.focus,
-        app.expanded,
-        app.panel_layout,
+        app.view.focus,
+        app.view.expanded,
+        app.view.panel_layout,
         show_worktrees,
     );
-    if show_worktrees && app.expanded && app.focus != Focus::Worktrees {
+    if show_worktrees && app.view.expanded && app.view.focus != Focus::Worktrees {
         render_compact_panel(
             frame,
             worktrees,
             "W",
             app.visible_worktree_indices().len(),
-            app.worktree_state.selected().and_then(|selected| {
-                app.visible_worktree_indices()
-                    .iter()
-                    .position(|index| *index == selected)
-            }),
+            app.repository
+                .worktree_state
+                .selected()
+                .and_then(|selected| {
+                    app.visible_worktree_indices()
+                        .iter()
+                        .position(|index| *index == selected)
+                }),
         );
     } else if show_worktrees {
         if app.history_active() {
@@ -79,13 +82,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             render_worktrees(frame, app, worktrees);
         }
     }
-    if app.expanded && app.focus != Focus::Files {
+    if app.view.expanded && app.view.focus != Focus::Files {
         render_compact_panel(
             frame,
             files,
             "F",
             app.visible_file_rows().len(),
-            app.file_state.selected().and_then(|selected| {
+            app.changes.file_state.selected().and_then(|selected| {
                 app.visible_file_rows()
                     .iter()
                     .position(|index| *index == selected)
@@ -94,7 +97,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         files::render(frame, app, files);
     }
-    if app.expanded && app.focus != Focus::Diff {
+    if app.view.expanded && app.view.focus != Focus::Diff {
         render_compact_panel(
             frame,
             diff,
@@ -107,10 +110,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     render_footer(frame, app, footer);
 
-    if app.show_help {
+    if app.view.show_help {
         render_help(frame);
     }
-    if let Some(confirmation) = &app.delete_confirmation {
+    if let Some(confirmation) = &app.view.delete_confirmation {
         render_delete_confirmation(frame, confirmation);
     }
 }
@@ -195,9 +198,9 @@ pub fn interaction_areas(area: Rect, app: &mut App) -> [Rect; 3] {
     .areas(area);
     panel_areas_for(
         body,
-        app.focus,
-        app.expanded,
-        app.panel_layout,
+        app.view.focus,
+        app.view.expanded,
+        app.view.panel_layout,
         app.has_linked_worktrees() || app.history_active(),
     )
 }
@@ -240,13 +243,13 @@ fn render_compact_panel(
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let mode_label = match (app.history_commit_selected(), app.mode) {
+    let mode_label = match (app.history_commit_selected(), app.changes.mode) {
         (true, ChangeMode::Uncommitted) => " COMMIT ",
         (true, ChangeMode::Branch) => " COMMIT RANGE ",
         (false, ChangeMode::Uncommitted) => " UNCOMMITTED ",
         (false, ChangeMode::Branch) => " BRANCH ",
     };
-    let mode = match app.mode {
+    let mode = match app.changes.mode {
         ChangeMode::Uncommitted => Span::styled(
             mode_label,
             Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
@@ -259,14 +262,17 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let worktree = app
         .selected_worktree()
         .map(|worktree| worktree.path.display().to_string())
-        .unwrap_or_else(|| app.directory.display().to_string());
-    let detail = match (app.history_commit_selected(), app.mode) {
+        .unwrap_or_else(|| app.repository.directory.display().to_string());
+    let detail = match (app.history_commit_selected(), app.changes.mode) {
         (true, ChangeMode::Uncommitted) => "selected commit compared with its parent".to_string(),
         (true, ChangeMode::Branch) => {
-            format!("selected commit since divergence from {}", app.base)
+            format!(
+                "selected commit since divergence from {}",
+                app.repository.base
+            )
         }
         (false, ChangeMode::Uncommitted) => "staged + unstaged + untracked".to_string(),
-        (false, ChangeMode::Branch) => format!("since divergence from {}", app.base),
+        (false, ChangeMode::Branch) => format!("since divergence from {}", app.repository.base),
     };
 
     let text = Text::from(vec![
@@ -284,13 +290,14 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible = app.visible_worktree_indices();
     let selected = app
+        .repository
         .worktree_state
         .selected()
         .and_then(|selected| visible.iter().position(|index| *index == selected));
     let items: Vec<ListItem> = visible
         .iter()
         .map(|index| {
-            let worktree = &app.worktrees[*index];
+            let worktree = &app.repository.worktrees[*index];
             let marker = if worktree.is_current { "●" } else { " " };
             let dirty = if worktree.dirty { "*" } else { "" };
             let state = if worktree.is_missing() {
@@ -338,19 +345,19 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_stateful_widget(
             list.block(pane_block(
                 &worktree_title(app, visible.len()),
-                app.focus == Focus::Worktrees,
+                app.view.focus == Focus::Worktrees,
             )),
             area,
             &mut list_state,
         );
-        *app.worktree_state.offset_mut() = list_state.offset();
+        *app.repository.worktree_state.offset_mut() = list_state.offset();
         return;
     }
 
     frame.render_widget(
         pane_block(
             &worktree_title(app, visible.len()),
-            app.focus == Focus::Worktrees,
+            app.view.focus == Focus::Worktrees,
         ),
         area,
     );
@@ -363,14 +370,14 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
         ..content_area
     };
     frame.render_stateful_widget(list, list_area, &mut list_state);
-    *app.worktree_state.offset_mut() = list_state.offset();
+    *app.repository.worktree_state.offset_mut() = list_state.offset();
 
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(Some("▲"))
         .end_symbol(Some("▼"))
         .track_symbol(Some("│"))
         .thumb_symbol("█")
-        .style(Style::new().fg(if app.focus == Focus::Worktrees {
+        .style(Style::new().fg(if app.view.focus == Focus::Worktrees {
             ACTIVE_BORDER
         } else {
             INACTIVE_BORDER
@@ -378,7 +385,7 @@ fn render_worktrees(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut scrollbar_state = ScrollbarState::new(visible.len())
         .viewport_content_length(viewport_length)
         .position(scrollbar_position(
-            app.worktree_state.offset(),
+            app.repository.worktree_state.offset(),
             visible.len(),
             viewport_length,
         ));
@@ -398,30 +405,30 @@ fn scrollbar_position(offset: usize, content_length: usize, viewport_length: usi
 fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let effective_layout = app
         .selected_file()
-        .map(|file| effective_layout(file, app.diff_layout))
-        .unwrap_or(app.diff_layout);
-    let automatic_layout = effective_layout != app.diff_layout;
+        .map(|file| effective_layout(file, app.view.diff_layout))
+        .unwrap_or(app.view.diff_layout);
+    let automatic_layout = effective_layout != app.view.diff_layout;
     let title = app
         .selected_file()
         .map(|file| {
             format!(
                 "Diff [{}, {}{}{}] - {}",
-                app.diff_view.label(),
+                app.changes.diff_view.label(),
                 effective_layout.label(),
                 if automatic_layout { " AUTO" } else { "" },
-                if app.line_wrap { ", WRAP" } else { "" },
+                if app.view.line_wrap { ", WRAP" } else { "" },
                 file.path.display()
             )
         })
         .unwrap_or_else(|| {
             format!(
                 "Diff [{}, {}{}]",
-                app.diff_view.label(),
+                app.changes.diff_view.label(),
                 effective_layout.label(),
-                if app.line_wrap { ", WRAP" } else { "" }
+                if app.view.line_wrap { ", WRAP" } else { "" }
             )
         });
-    let title = if let Some(search) = &app.search {
+    let title = if let Some(search) = &app.view.search {
         if search.focus == Focus::Diff {
             let position = app
                 .diff_search_match_position()
@@ -435,10 +442,10 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         title
     };
-    let block = pane_block(&title, app.focus == Focus::Diff);
+    let block = pane_block(&title, app.view.focus == Focus::Diff);
 
     let Some(file) = app.selected_file() else {
-        let message = if app.status.is_some() {
+        let message = if app.view.status.is_some() {
             "Unable to load changes"
         } else {
             "No changed files"
@@ -476,20 +483,21 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let search_query = app
+        .view
         .search
         .as_ref()
         .filter(|search| search.focus == Focus::Diff)
         .map_or("", |search| search.query.as_str());
     let table = diff::render(
         file,
-        app.mode,
+        app.changes.mode,
         effective_layout,
-        app.line_wrap,
+        app.view.line_wrap,
         search_query,
         area,
     )
     .block(block);
-    frame.render_stateful_widget(table, area, &mut app.diff_state);
+    frame.render_stateful_widget(table, area, &mut app.changes.diff_state);
 }
 
 fn directory_name(path: &Path) -> String {
@@ -511,30 +519,32 @@ pub(crate) fn pane_block<'a>(title: &'a str, active: bool) -> Block<'a> {
 }
 
 fn worktree_title(app: &App, visible_count: usize) -> String {
-    let count = if app.worktree_filter.is_empty() {
+    let count = if app.view.worktree_filter.is_empty() {
         visible_count.to_string()
     } else {
-        format!("{visible_count}/{}", app.worktrees.len())
+        format!("{visible_count}/{}", app.repository.worktrees.len())
     };
     panel_title(
         &format!("Worktrees ({count})"),
-        &app.worktree_filter,
-        app.search
+        &app.view.worktree_filter,
+        app.view
+            .search
             .as_ref()
             .is_some_and(|search| search.focus == Focus::Worktrees),
     )
 }
 
 pub(crate) fn file_title(app: &App, visible_count: usize) -> String {
-    let count = if app.file_filter.is_empty() {
-        app.files.len().to_string()
+    let count = if app.view.file_filter.is_empty() {
+        app.changes.files.len().to_string()
     } else {
-        format!("{visible_count}/{}", app.files.len())
+        format!("{visible_count}/{}", app.changes.files.len())
     };
     panel_title(
         &format!("Files ({count})"),
-        &app.file_filter,
-        app.search
+        &app.view.file_filter,
+        app.view
+            .search
             .as_ref()
             .is_some_and(|search| search.focus == Focus::Files),
     )
@@ -551,12 +561,12 @@ fn panel_title(title: &str, filter: &str, searching: bool) -> String {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let line = if let Some(search) = &app.search {
+    let line = if let Some(search) = &app.view.search {
         search_line(search.focus, &search.query)
-    } else if let Some(status) = &app.status {
+    } else if let Some(status) = &app.view.status {
         status_line(status.kind, &status.text)
     } else {
-        navigation_line(app.focus, app.expanded)
+        navigation_line(app.view.focus, app.view.expanded)
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -1002,6 +1012,7 @@ mod tests {
         file.additions = 1;
         file.deletions = 1;
         file.hunks.push(DiffHunk {
+            id: crate::model::HunkId::synthetic("render-test"),
             header: "@@ -1 +1 @@".into(),
             kind: HunkKind::Staged,
             collapsed: false,
@@ -1020,78 +1031,89 @@ mod tests {
         let mut diff_state = ratatui::widgets::TableState::default();
         diff_state.select(Some(0));
         let mut app = App {
-            directory: PathBuf::from("/repo"),
-            base: "main".into(),
-            mode: ChangeMode::Uncommitted,
-            diff_view: DiffView::Hunks,
-            diff_layout: DiffLayout::Split,
-            line_wrap: false,
-            expanded: false,
-            initial_layout_applied: true,
-            panel_layout: PanelLayout::Columns,
-            focus: Focus::Worktrees,
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/repo"),
-                    branch: "feature".into(),
-                    head: "12345678".into(),
-                    dirty: true,
-                    is_current: true,
-                    is_main: true,
-                    available: true,
-                    prunable_reason: None,
-                    locked_reason: None,
-                },
-                Worktree {
-                    path: PathBuf::from("/missing-worktree"),
-                    branch: "stale".into(),
-                    head: "87654321".into(),
-                    dirty: false,
-                    is_current: false,
-                    is_main: false,
-                    available: false,
-                    prunable_reason: Some("gitdir file points to non-existent location".into()),
-                    locked_reason: None,
-                },
-            ],
-            files: vec![file],
-            file_tree: vec![crate::model::FileTreeRow {
-                label: "└── src/main.rs".into(),
-                path: std::path::PathBuf::from("src/main.rs"),
-                kind: FileTreeRowKind::File,
-            }],
-            worktree_state,
-            history_state: ListState::default(),
-            file_state,
-            diff_state,
-            show_help: false,
-            delete_confirmation: None,
-            status: None,
-            worktree_filter: String::new(),
-            file_filter: String::new(),
-            search: None,
-            worktree_panel: crate::app::WorktreePanel::Worktrees,
-            commits: Vec::new(),
-            history_range_commits: std::collections::HashSet::new(),
-            local_base_hash: None,
-            remote_base_hash: None,
-            branch_tips: std::collections::HashMap::new(),
-            history_head_hash: None,
-            history_selection: None,
-            selected_file_path: Some(PathBuf::from("src/main.rs")),
-            history_preferred_file: None,
+            repository: crate::app::RepositoryState {
+                directory: PathBuf::from("/repo"),
+                base: "main".into(),
+                worktrees: vec![
+                    Worktree {
+                        path: PathBuf::from("/repo"),
+                        branch: "feature".into(),
+                        head: "12345678".into(),
+                        dirty: true,
+                        is_current: true,
+                        is_main: true,
+                        available: true,
+                        prunable_reason: None,
+                        locked_reason: None,
+                    },
+                    Worktree {
+                        path: PathBuf::from("/missing-worktree"),
+                        branch: "stale".into(),
+                        head: "87654321".into(),
+                        dirty: false,
+                        is_current: false,
+                        is_main: false,
+                        available: false,
+                        prunable_reason: Some("gitdir file points to non-existent location".into()),
+                        locked_reason: None,
+                    },
+                ],
+                worktree_state,
+            },
+            changes: crate::app::ChangeState {
+                mode: ChangeMode::Uncommitted,
+                diff_view: DiffView::Hunks,
+                files: vec![file],
+                file_tree: vec![crate::model::FileTreeRow {
+                    label: "└── src/main.rs".into(),
+                    path: std::path::PathBuf::from("src/main.rs"),
+                    kind: FileTreeRowKind::File,
+                }],
+                file_lookup: crate::app::files::FileLookup::default(),
+                file_state,
+                diff_state,
+                selected_file_path: Some(PathBuf::from("src/main.rs")),
+            },
+            history: crate::app::HistoryState {
+                list_state: ListState::default(),
+                worktree_panel: crate::app::WorktreePanel::Worktrees,
+                commits: Vec::new(),
+                range_commits: std::collections::HashSet::new(),
+                local_base_hash: None,
+                remote_base_hash: None,
+                branch_tips: std::collections::HashMap::new(),
+                head_hash: None,
+                selection: None,
+                preferred_file: None,
+            },
+            view: crate::app::ViewState {
+                diff_layout: DiffLayout::Split,
+                line_wrap: false,
+                expanded: false,
+                initial_layout_applied: true,
+                panel_layout: PanelLayout::Columns,
+                focus: Focus::Worktrees,
+                show_help: false,
+                delete_confirmation: None,
+                status: None,
+                worktree_filter: String::new(),
+                file_filter: String::new(),
+                search: None,
+            },
         };
-        app.worktrees.extend((1..=3).map(|index| Worktree {
-            path: PathBuf::from(format!("/demo-worktree-{index}")),
-            branch: format!("demo-{index}"),
-            head: format!("0000000{index}"),
-            dirty: true,
-            is_current: false,
-            is_main: false,
-            available: true,
-            prunable_reason: None,
-            locked_reason: None,
-        }));
+        app.repository
+            .worktrees
+            .extend((1..=3).map(|index| Worktree {
+                path: PathBuf::from(format!("/demo-worktree-{index}")),
+                branch: format!("demo-{index}"),
+                head: format!("0000000{index}"),
+                dirty: true,
+                is_current: false,
+                is_main: false,
+                available: true,
+                prunable_reason: None,
+                locked_reason: None,
+            }));
         let backend = TestBackend::new(140, 12);
         let mut terminal = Terminal::new(backend).expect("test terminal should be created");
 
@@ -1116,12 +1138,19 @@ mod tests {
         assert!(rendered.contains('▲'));
         assert!(rendered.contains('▼'));
 
-        app.worktree_state.select(Some(app.worktrees.len() - 1));
+        app.repository
+            .worktree_state
+            .select(Some(app.repository.worktrees.len() - 1));
         terminal
             .draw(|frame| render(frame, &mut app))
             .expect("interface should render after scrolling");
         let body = Rect::new(0, 2, 140, 9);
-        let [worktrees, _, _] = panel_areas(body, app.focus, app.expanded, app.panel_layout);
+        let [worktrees, _, _] = panel_areas(
+            body,
+            app.view.focus,
+            app.view.expanded,
+            app.view.panel_layout,
+        );
         let content_area = worktrees.inner(Margin {
             vertical: 1,
             horizontal: 1,
@@ -1135,8 +1164,8 @@ mod tests {
         assert_eq!(scrollbar_position(1, 5, 3), 2);
         assert_eq!(scrollbar_position(2, 5, 3), 4);
 
-        app.worktree_panel = crate::app::WorktreePanel::History;
-        app.commits = vec![crate::model::Commit {
+        app.history.worktree_panel = crate::app::WorktreePanel::History;
+        app.history.commits = vec![crate::model::Commit {
             hash: "base-hash".into(),
             parents: vec![],
             short_hash: "base-has".into(),
@@ -1191,41 +1220,50 @@ mod tests {
             },
         ];
         let mut app = App {
-            directory: PathBuf::from("/repo"),
-            base: "main".into(),
-            mode: ChangeMode::Branch,
-            diff_view: DiffView::Hunks,
-            diff_layout: DiffLayout::Split,
-            line_wrap: false,
-            expanded: false,
-            initial_layout_applied: true,
-            panel_layout: PanelLayout::Columns,
-            focus: Focus::Worktrees,
-            worktrees: vec![],
-            files: vec![],
-            file_tree: vec![],
-            worktree_state: ListState::default(),
-            history_state: ListState::default(),
-            file_state: ListState::default(),
-            diff_state: ratatui::widgets::TableState::default(),
-            show_help: false,
-            delete_confirmation: None,
-            status: None,
-            worktree_filter: String::new(),
-            file_filter: String::new(),
-            search: None,
-            worktree_panel: crate::app::WorktreePanel::History,
-            commits,
-            history_range_commits: ["middle".to_string()].into_iter().collect(),
-            local_base_hash: None,
-            remote_base_hash: None,
-            branch_tips: std::collections::HashMap::new(),
-            history_head_hash: None,
-            history_selection: Some(HistorySelection::Commit {
-                hash: "middle".into(),
-            }),
-            selected_file_path: None,
-            history_preferred_file: None,
+            repository: crate::app::RepositoryState {
+                directory: PathBuf::from("/repo"),
+                base: "main".into(),
+                worktrees: vec![],
+                worktree_state: ListState::default(),
+            },
+            changes: crate::app::ChangeState {
+                mode: ChangeMode::Branch,
+                diff_view: DiffView::Hunks,
+                files: vec![],
+                file_tree: vec![],
+                file_lookup: crate::app::files::FileLookup::default(),
+                file_state: ListState::default(),
+                diff_state: ratatui::widgets::TableState::default(),
+                selected_file_path: None,
+            },
+            history: crate::app::HistoryState {
+                list_state: ListState::default(),
+                worktree_panel: crate::app::WorktreePanel::History,
+                commits,
+                range_commits: ["middle".to_string()].into_iter().collect(),
+                local_base_hash: None,
+                remote_base_hash: None,
+                branch_tips: std::collections::HashMap::new(),
+                head_hash: None,
+                selection: Some(HistorySelection::Commit {
+                    hash: "middle".into(),
+                }),
+                preferred_file: None,
+            },
+            view: crate::app::ViewState {
+                diff_layout: DiffLayout::Split,
+                line_wrap: false,
+                expanded: false,
+                initial_layout_applied: true,
+                panel_layout: PanelLayout::Columns,
+                focus: Focus::Worktrees,
+                show_help: false,
+                delete_confirmation: None,
+                status: None,
+                worktree_filter: String::new(),
+                file_filter: String::new(),
+                search: None,
+            },
         };
 
         assert!(!history_commit_is_in_branch_diff(&app, "head"));
@@ -1233,8 +1271,8 @@ mod tests {
         assert!(!history_commit_is_in_branch_diff(&app, "base"));
         assert!(!history_commit_is_in_branch_diff(&app, "older"));
 
-        app.history_selection = Some(HistorySelection::Wip);
-        app.history_range_commits.clear();
+        app.history.selection = Some(HistorySelection::Wip);
+        app.history.range_commits.clear();
         assert!(!history_wip_is_in_branch_diff(&app));
     }
 

@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     }
 
     let mut app = App::load(directory, cli.base.clone())?;
-    app.mode = match cli.mode {
+    app.changes.mode = match cli.mode {
         RenderMode::Uncommitted => crate::model::ChangeMode::Uncommitted,
         RenderMode::Branch => crate::model::ChangeMode::Branch,
     };
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     apply_startup_panel(&mut app, &cli);
 
     let mut auto_refresh = AutoRefresh::new(
-        &app.directory,
+        &app.repository.directory,
         app.selected_worktree()
             .map(|worktree| worktree.path.as_path()),
     );
@@ -84,19 +84,19 @@ fn apply_startup_panel(app: &mut App, cli: &Cli) {
     };
     let panel = match focus {
         StartupFocus::History => {
-            app.worktree_panel = WorktreePanel::History;
+            app.history.worktree_panel = WorktreePanel::History;
             Focus::Worktrees
         }
         StartupFocus::Worktrees => {
-            app.worktree_panel = WorktreePanel::Worktrees;
+            app.history.worktree_panel = WorktreePanel::Worktrees;
             Focus::Worktrees
         }
         StartupFocus::Files => Focus::Files,
         StartupFocus::Diff => Focus::Diff,
     };
-    app.focus = panel;
-    app.expanded = true;
-    app.initial_layout_applied = true;
+    app.view.focus = panel;
+    app.view.expanded = true;
+    app.view.initial_layout_applied = true;
 }
 
 fn run_app(

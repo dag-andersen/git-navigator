@@ -14,21 +14,34 @@ use crate::{
 pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible = app.visible_file_rows();
     let selected = app
+        .changes
         .file_state
         .selected()
         .and_then(|selected| visible.iter().position(|index| *index == selected));
     let items: Vec<ListItem> = visible
         .iter()
         .map(|index| {
-            let tree_row = &app.file_tree[*index];
-            let Some(file) = app.files.iter().find(|file| file.path == tree_row.path) else {
+            let tree_row = &app.changes.file_tree[*index];
+            let Some(file) = app
+                .changes
+                .file_lookup
+                .file_indices
+                .get(&tree_row.path)
+                .and_then(|index| app.changes.files.get(*index))
+                .or_else(|| {
+                    app.changes
+                        .files
+                        .iter()
+                        .find(|file| file.path == tree_row.path)
+                })
+            else {
                 return ListItem::new(Line::styled(
                     app.file_tree_label(*index, &visible),
                     Style::new().fg(Color::Cyan).bold(),
                 ));
             };
 
-            let style = file_style(file, app.mode);
+            let style = file_style(file, app.changes.mode);
             ListItem::new(Line::from(vec![
                 Span::styled(app.file_tree_label(*index, &visible), style),
                 Span::styled(
@@ -45,13 +58,13 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let title = super::file_title(app, visible.len());
     let list = List::new(items)
-        .block(super::pane_block(&title, app.focus == Focus::Files))
+        .block(super::pane_block(&title, app.view.focus == Focus::Files))
         .highlight_style(super::SELECTED)
         .highlight_symbol("› ");
     let mut list_state = ListState::default();
     list_state.select(selected);
     frame.render_stateful_widget(list, area, &mut list_state);
-    *app.file_state.offset_mut() = list_state.offset();
+    *app.changes.file_state.offset_mut() = list_state.offset();
 }
 
 pub(crate) fn file_style(file: &ChangedFile, mode: ChangeMode) -> Style {

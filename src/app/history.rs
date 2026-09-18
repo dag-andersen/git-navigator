@@ -2,14 +2,30 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     app::App,
-    model::{Commit, HistoryRow, HistorySelection},
+    model::{Commit, HistorySelection},
 };
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryRow {
+    Wip {
+        graph: String,
+    },
+    Graph(String),
+    BranchLabel {
+        graph: String,
+        names: Vec<String>,
+        connected: bool,
+    },
+    Commit {
+        hash: String,
+    },
+}
 
 pub(crate) fn display_rows(app: &App) -> Vec<HistoryRow> {
     display_rows_for(
-        &app.commits,
-        &app.branch_tips,
-        app.history_head_hash.as_deref(),
+        &app.history.commits,
+        &app.history.branch_tips,
+        app.history.head_hash.as_deref(),
     )
 }
 
@@ -73,9 +89,10 @@ pub(crate) fn selection_after_refresh(
 }
 
 pub(crate) fn list_index(app: &App, visible_row: usize) -> Option<usize> {
-    match display_rows(app).get(visible_row + app.history_state.offset())? {
+    match display_rows(app).get(visible_row + app.history.list_state.offset())? {
         HistoryRow::Wip { .. } => Some(0),
         HistoryRow::Commit { hash } => app
+            .history
             .commits
             .iter()
             .position(|commit| commit.hash == *hash)
