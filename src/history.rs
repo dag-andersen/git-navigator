@@ -111,6 +111,7 @@ pub fn history_comparison_base(
         ],
     )?;
 
+    let mut fallback_first_parent = None;
     for line in merges.lines() {
         let Some((_merge, parents)) = line.split_once('\0') else {
             continue;
@@ -120,14 +121,21 @@ pub fn history_comparison_base(
             continue;
         };
         for second_parent in parents {
+            if second_parent == comparison_ref {
+                return Ok(first_parent.to_string());
+            }
             let ancestor = git_allow_failure(
                 worktree,
                 &["merge-base", "--is-ancestor", comparison_ref, second_parent],
             )?;
             if ancestor.status.success() {
-                return Ok(first_parent.to_string());
+                fallback_first_parent = Some(first_parent);
             }
         }
+    }
+
+    if let Some(first_parent) = fallback_first_parent {
+        return Ok(first_parent.to_string());
     }
 
     let output = git_text(worktree, &["merge-base", comparison_ref, &base_ref])?;
