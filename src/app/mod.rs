@@ -37,6 +37,7 @@ use self::{
         first_file_row_in, moved_visible_file_selection,
     },
     history::{
+        default_selection as history_default_selection, history_has_wip,
         list_index as history_list_index,
         selection_after_refresh as history_selection_after_refresh,
         visual_index as history_visual_index,
@@ -385,7 +386,16 @@ impl App {
         changes.diff_state = diff_state;
         changes.select_file_path(selected_file_path);
 
-        Ok(Self {
+        let history_selection = if has_linked_worktrees {
+            None
+        } else {
+            history_default_selection(
+                &commits,
+                history_head_hash.as_deref(),
+                worktrees[selected_worktree].dirty,
+            )
+        };
+        let mut app = Self {
             repository: RepositoryState {
                 directory,
                 base,
@@ -407,7 +417,7 @@ impl App {
                 branch_tips,
                 head_hash: history_head_hash,
                 comparison_base: None,
-                selection: (!has_linked_worktrees).then_some(HistorySelection::Wip),
+                selection: history_selection,
                 preferred_file: history_preferred_file,
             },
             view: ViewState {
@@ -425,7 +435,11 @@ impl App {
                 search: None,
                 follow_changes: false,
             },
-        })
+        };
+        if !has_linked_worktrees && !history_has_wip(&app) {
+            app.reload_selected_commit();
+        }
+        Ok(app)
     }
 
     fn select_worktree(&mut self, visible_position: usize) {
@@ -441,19 +455,29 @@ impl App {
     }
 
     fn select_commit(&mut self, visible_position: usize) {
-        if visible_position > self.history.commits.len() {
+        let wip_visible = history_has_wip(self);
+        let commit_position = visible_position.checked_sub(usize::from(wip_visible));
+        if commit_position.is_none() && !wip_visible {
             return;
         }
-        let next = if visible_position == 0 {
-            HistorySelection::Wip
-        } else {
-            let Some(commit) = self.history.commits.get(visible_position - 1) else {
-                return;
-            };
-            HistorySelection::Commit {
-                hash: commit.hash.clone(),
-            }
+        if commit_position.is_none() {
+            self.select_history(HistorySelection::Wip);
+            return;
+        }
+        let Some(commit) = self
+            .history
+            .commits
+            .get(commit_position.unwrap_or_default())
+        else {
+            return;
         };
+        let next = HistorySelection::Commit {
+            hash: commit.hash.clone(),
+        };
+        self.select_history(next);
+    }
+
+    fn select_history(&mut self, next: HistorySelection) {
         let next = Some(next);
         if self.history.selection == next {
             return;
@@ -566,7 +590,11 @@ impl App {
                         hash: commit.hash.clone(),
                     })
                 }
-                None => Some(HistorySelection::Wip),
+                None => history_default_selection(
+                    &self.history.commits,
+                    self.history.head_hash.as_deref(),
+                    history_has_wip(self),
+                ),
             };
             self.history
                 .list_state
@@ -877,6 +905,8 @@ impl App {
                     self.history.selection = history_selection_after_refresh(
                         snapshot.history_selection.as_ref(),
                         &self.history.commits,
+                        self.history.head_hash.as_deref(),
+                        history_has_wip(self),
                     );
                     if let Err(error) = self.update_history_range() {
                         self.set_error(format!("Could not update history range: {error:#}"));
@@ -887,6 +917,8 @@ impl App {
                             snapshot.file_path.as_deref(),
                             snapshot.diff_position.as_ref(),
                         );
+                    } else if self.history.selection.is_some() {
+                        self.reload_selected_commit();
                     }
                 } else {
                     self.reload_files_with_position(
@@ -1159,14 +1191,22 @@ impl App {
                     git::base_tip_hashes(&worktree_path, &self.repository.base);
                 self.history.local_base_hash = local_base_hash;
                 self.history.remote_base_hash = remote_base_hash;
-                self.history.selection = Some(HistorySelection::Wip);
+                self.history.selection = history_default_selection(
+                    &self.history.commits,
+                    self.history.head_hash.as_deref(),
+                    history_has_wip(self),
+                );
                 self.history.worktree_panel = WorktreePanel::History;
                 if let Err(error) = self.update_history_range() {
                     self.set_error(format!("Could not update history range: {error:#}"));
                     return;
                 }
-                let preferred = self.history.preferred_file.clone();
-                self.reload_files(preferred.as_deref());
+                if self.history_commit_selected() {
+                    self.reload_selected_commit();
+                } else {
+                    let preferred = self.history.preferred_file.clone();
+                    self.reload_files(preferred.as_deref());
+                }
             }
             Err(error) => self.set_error(format!("Could not load commit history: {error:#}")),
         }
@@ -2072,6 +2112,18 @@ mod tests {
     #[test]
     fn wip_is_the_first_history_entry_and_uses_live_changes() {
         let mut app = test_app();
+        app.repository.worktrees.push(Worktree {
+            path: PathBuf::from("/repo"),
+            branch: "main".into(),
+            head: "12345678".into(),
+            dirty: true,
+            is_current: true,
+            is_main: true,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
+        app.repository.worktree_state.select(Some(0));
         app.history.worktree_panel = WorktreePanel::History;
         app.history.commits = vec![Commit {
             hash: "1234567890abcdef".into(),
@@ -2136,7 +2188,12 @@ mod tests {
         ];
 
         assert_eq!(
-            history_selection_after_refresh(Some(&HistorySelection::Wip), &commits),
+            history_selection_after_refresh(
+                Some(&HistorySelection::Wip),
+                &commits,
+                Some("new"),
+                true,
+            ),
             Some(HistorySelection::Wip)
         );
         assert_eq!(
@@ -2145,6 +2202,8 @@ mod tests {
                     hash: "selected".into(),
                 }),
                 &commits,
+                Some("new"),
+                true,
             ),
             Some(HistorySelection::Commit {
                 hash: "selected".into(),
@@ -2156,6 +2215,8 @@ mod tests {
                     hash: "rewritten".into(),
                 }),
                 &commits,
+                Some("new"),
+                true,
             ),
             Some(HistorySelection::Wip)
         );
@@ -2164,6 +2225,18 @@ mod tests {
     #[test]
     fn history_clicks_skip_graph_continuation_rows() {
         let mut app = test_app();
+        app.repository.worktrees.push(Worktree {
+            path: PathBuf::from("/repo"),
+            branch: "main".into(),
+            head: "12345678".into(),
+            dirty: true,
+            is_current: true,
+            is_main: true,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
+        app.repository.worktree_state.select(Some(0));
         app.history.worktree_panel = WorktreePanel::History;
         app.history.commits = vec![
             Commit {

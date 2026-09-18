@@ -8,7 +8,7 @@ use ratatui::{
 use crate::{
     app::{
         App, Focus,
-        history::{HistoryRow, display_rows, visual_index},
+        history::{HistoryRow, display_rows, history_has_wip, visual_index},
     },
     model::{ChangeMode, HistorySelection},
 };
@@ -26,7 +26,10 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
         .selected_worktree()
         .map(|worktree| worktree.branch.as_str())
         .unwrap_or("detached HEAD");
-    let title = format!("History ({}) - {branch}", app.history.commits.len() + 1);
+    let title = format!(
+        "History ({}) - {branch}",
+        app.history.commits.len() + usize::from(history_has_wip(app))
+    );
     let list = List::new(items)
         .block(super::pane_block(
             &title,

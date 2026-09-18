@@ -26,6 +26,7 @@ pub(crate) fn display_rows(app: &App) -> Vec<HistoryRow> {
         &app.history.commits,
         &app.history.branch_tips,
         app.history.head_hash.as_deref(),
+        history_has_wip(app),
     )
 }
 
@@ -33,6 +34,7 @@ fn display_rows_for(
     commits: &[Commit],
     branch_tips: &HashMap<String, Vec<String>>,
     head_hash: Option<&str>,
+    has_wip: bool,
 ) -> Vec<HistoryRow> {
     let mut rows = Vec::new();
     let mut newer_parents = HashSet::new();
@@ -45,7 +47,7 @@ fn display_rows_for(
                 .cloned()
                 .map(HistoryRow::Graph),
         );
-        if head_hash == Some(commit.hash.as_str()) {
+        if has_wip && head_hash == Some(commit.hash.as_str()) {
             rows.push(HistoryRow::Wip {
                 graph: commit.graph.last().cloned().unwrap_or_else(|| "●".into()),
             });
@@ -62,7 +64,7 @@ fn display_rows_for(
         });
         newer_parents.extend(commit.parents.iter().map(String::as_str));
     }
-    if !rows.iter().any(|row| matches!(row, HistoryRow::Wip { .. })) {
+    if has_wip && !rows.iter().any(|row| matches!(row, HistoryRow::Wip { .. })) {
         rows.insert(
             0,
             HistoryRow::Wip {
@@ -76,15 +78,17 @@ fn display_rows_for(
 pub(crate) fn selection_after_refresh(
     selection: Option<&HistorySelection>,
     commits: &[Commit],
+    head_hash: Option<&str>,
+    has_wip: bool,
 ) -> Option<HistorySelection> {
     match selection {
-        Some(HistorySelection::Wip) => Some(HistorySelection::Wip),
+        Some(HistorySelection::Wip) if has_wip => Some(HistorySelection::Wip),
         Some(HistorySelection::Commit { hash })
             if commits.iter().any(|commit| commit.hash == *hash) =>
         {
             Some(HistorySelection::Commit { hash: hash.clone() })
         }
-        _ => Some(HistorySelection::Wip),
+        _ => default_selection(commits, head_hash, has_wip),
     }
 }
 
@@ -96,9 +100,34 @@ pub(crate) fn list_index(app: &App, visible_row: usize) -> Option<usize> {
             .commits
             .iter()
             .position(|commit| commit.hash == *hash)
-            .map(|index| index + 1),
+            .map(|index| index + usize::from(history_has_wip(app))),
         HistoryRow::Graph(_) | HistoryRow::BranchLabel { .. } => None,
     }
+}
+
+pub(crate) fn default_selection(
+    commits: &[Commit],
+    head_hash: Option<&str>,
+    has_wip: bool,
+) -> Option<HistorySelection> {
+    if has_wip {
+        return Some(HistorySelection::Wip);
+    }
+    head_hash
+        .filter(|hash| commits.iter().any(|commit| commit.hash == *hash))
+        .map(|hash| HistorySelection::Commit {
+            hash: hash.to_string(),
+        })
+        .or_else(|| {
+            commits.first().map(|commit| HistorySelection::Commit {
+                hash: commit.hash.clone(),
+            })
+        })
+}
+
+pub(crate) fn history_has_wip(app: &App) -> bool {
+    app.selected_worktree()
+        .is_some_and(|worktree| worktree.dirty)
 }
 
 pub(crate) fn selectable_selections(app: &App) -> Vec<HistorySelection> {
@@ -139,7 +168,7 @@ mod tests {
         let branch_tips = HashMap::from([(String::from("tip"), vec![String::from("feature")])]);
 
         assert_eq!(
-            display_rows_for(&commits, &branch_tips, Some("tip")),
+            display_rows_for(&commits, &branch_tips, Some("tip"), true),
             vec![
                 HistoryRow::Graph("│╲  ".into()),
                 HistoryRow::Wip {
@@ -176,7 +205,7 @@ mod tests {
         let branch_tips = HashMap::from([(String::from("tip"), vec![String::from("feature")])]);
 
         assert!(
-            display_rows_for(&commits, &branch_tips, None)
+            display_rows_for(&commits, &branch_tips, None, false)
                 .iter()
                 .any(|row| {
                     matches!(
@@ -187,6 +216,25 @@ mod tests {
                         }
                     )
                 })
+        );
+    }
+
+    #[test]
+    fn omits_wip_when_the_worktree_is_clean() {
+        let commits = vec![Commit {
+            hash: "tip".into(),
+            parents: vec![],
+            short_hash: "tip".into(),
+            subject: "tip".into(),
+            graph: vec!["● ".into()],
+        }];
+
+        let rows = display_rows_for(&commits, &HashMap::new(), Some("tip"), false);
+
+        assert!(!rows.iter().any(|row| matches!(row, HistoryRow::Wip { .. })));
+        assert_eq!(
+            default_selection(&commits, Some("tip"), false),
+            Some(HistorySelection::Commit { hash: "tip".into() })
         );
     }
 }
