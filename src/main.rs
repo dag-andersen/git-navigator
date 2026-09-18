@@ -36,14 +36,14 @@ fn main() -> Result<()> {
     }
 
     let mut app = App::load(directory, cli.base.clone())?;
+    app.mode = match cli.mode {
+        RenderMode::Uncommitted => crate::model::ChangeMode::Uncommitted,
+        RenderMode::Branch => crate::model::ChangeMode::Branch,
+    };
     if cli.render {
         if cli.width == 0 || cli.height == 0 {
             bail!("render width and height must be greater than zero");
         }
-        app.mode = match cli.mode {
-            RenderMode::Uncommitted => crate::model::ChangeMode::Uncommitted,
-            RenderMode::Branch => crate::model::ChangeMode::Branch,
-        };
         app.prepare_render(
             matches!(cli.focus, Some(StartupFocus::History)),
             cli.commit.as_deref(),

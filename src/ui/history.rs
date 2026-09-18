@@ -42,12 +42,13 @@ fn items(app: &App) -> Vec<ListItem<'static>> {
             .graph
             .iter()
             .take(commit.graph.len().saturating_sub(1))
-            .map(|graph| graph_line(graph, active))
+            .map(|graph| graph_line(graph, active, None))
             .collect::<Vec<_>>();
         items.extend(graph_lines.into_iter().map(ListItem::new));
         let graph = graph_line(
             commit.graph.last().map(String::as_str).unwrap_or("●"),
             active,
+            base_node(app, &commit.hash),
         );
         let mut commit_line = graph;
         commit_line.spans.extend([
@@ -80,33 +81,47 @@ pub(crate) fn visual_index(app: &App, selected_commit: Option<usize>) -> Option<
 
 fn node(active: bool) -> Span<'static> {
     if active {
-        Span::styled("● ", Style::new().fg(Color::LightGreen).bold())
+        Span::styled("○ ", Style::new().fg(Color::LightGreen).bold())
     } else {
-        Span::styled("● ", Style::new().fg(Color::Cyan))
+        Span::styled("○ ", Style::new().fg(Color::Cyan))
     }
 }
 
-pub(crate) fn graph_line(graph: &str, active: bool) -> Line<'static> {
+pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Line<'static> {
     let mut spans = Vec::new();
     let graph_style = Style::new().fg(Color::DarkGray);
     for character in graph.chars() {
         let style = if character == '●' {
-            Style::new()
-                .fg(if active {
-                    Color::LightGreen
-                } else {
-                    Color::Cyan
-                })
-                .bold()
+            let color = if marker.is_some() {
+                Color::Red
+            } else if active {
+                Color::Blue
+            } else {
+                Color::Cyan
+            };
+            Style::new().fg(color).bold()
         } else {
             graph_style
         };
-        spans.push(Span::styled(character.to_string(), style));
+        let symbol = marker
+            .filter(|_| character == '●')
+            .map_or_else(|| character.to_string(), |marker| marker.to_string());
+        spans.push(Span::styled(symbol.to_string(), style));
     }
     spans.push(Span::raw(
         " ".repeat(4usize.saturating_sub(graph.chars().count())),
     ));
     Line::from(spans)
+}
+
+fn base_node(app: &App, hash: &str) -> Option<char> {
+    if app.local_base_hash.as_deref() == Some(hash) {
+        Some('■')
+    } else if app.remote_base_hash.as_deref() == Some(hash) {
+        Some('□')
+    } else {
+        None
+    }
 }
 
 pub(crate) fn wip_is_in_branch_diff(app: &App) -> bool {
