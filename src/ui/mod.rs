@@ -1081,6 +1081,7 @@ mod tests {
                 remote_base_hash: None,
                 branch_tips: std::collections::HashMap::new(),
                 head_hash: None,
+                comparison_base: None,
                 selection: None,
                 preferred_file: None,
             },
@@ -1252,6 +1253,7 @@ mod tests {
                 remote_base_hash: None,
                 branch_tips: std::collections::HashMap::new(),
                 head_hash: None,
+                comparison_base: None,
                 selection: Some(HistorySelection::Commit {
                     hash: "middle".into(),
                 }),

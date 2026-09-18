@@ -110,6 +110,7 @@ mod tests {
                 remote_base_hash: None,
                 branch_tips: Default::default(),
                 head_hash: None,
+                comparison_base: None,
                 selection: None,
                 preferred_file: None,
             },

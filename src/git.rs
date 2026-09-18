@@ -10,7 +10,7 @@ mod worktrees;
 pub use changes::{load_changes, load_commit_changes};
 pub use history::{
     base_tip_hashes, branch_tips, commit_history, head_hash, history_branch_ref,
-    history_range_commits,
+    history_comparison_base, history_range_commits_from_base, is_ancestor,
 };
 pub use process::common_git_dir;
 pub use worktrees::{discover_worktrees, remove_worktree};

@@ -25,15 +25,16 @@ pub fn load_commit_changes(
     view: DiffView,
     mode: ChangeMode,
     base: &str,
-    comparison_ref: Option<&str>,
+    comparison_base: Option<&str>,
 ) -> Result<Vec<ChangedFile>> {
     let start = match mode {
         ChangeMode::Uncommitted => git_text(worktree, &["rev-parse", &format!("{}^", commit.hash)])
             .map(|parent| parent.trim().to_string())
             .unwrap_or_else(|_| "4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_string()),
-        ChangeMode::Branch => {
-            super::history::history_comparison_base(worktree, &commit.hash, base, comparison_ref)?
-        }
+        ChangeMode::Branch => match comparison_base {
+            Some(comparison_base) => comparison_base.to_string(),
+            None => super::history::history_comparison_base(worktree, &commit.hash, base, None)?,
+        },
     };
     let context = if view == DiffView::FullFile {
         FULL_FILE_CONTEXT

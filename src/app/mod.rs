@@ -218,6 +218,7 @@ pub struct HistoryState {
     pub remote_base_hash: Option<String>,
     pub branch_tips: HashMap<String, Vec<String>>,
     pub head_hash: Option<String>,
+    pub comparison_base: Option<String>,
     pub selection: Option<HistorySelection>,
     pub preferred_file: Option<PathBuf>,
 }
@@ -405,6 +406,7 @@ impl App {
                 remote_base_hash,
                 branch_tips,
                 head_hash: history_head_hash,
+                comparison_base: None,
                 selection: (!has_linked_worktrees).then_some(HistorySelection::Wip),
                 preferred_file: history_preferred_file,
             },
@@ -1206,6 +1208,7 @@ impl App {
 
     fn update_history_range(&mut self) -> Result<()> {
         self.history.range_commits.clear();
+        self.history.comparison_base = None;
         if self.changes.mode != ChangeMode::Branch || !self.history_active() {
             return Ok(());
         }
@@ -1220,13 +1223,24 @@ impl App {
             None => return Ok(()),
         };
         let comparison_ref =
-            git::history_branch_ref(&worktree_path, &target, &self.repository.base)?;
-        self.history.range_commits = git::history_range_commits(
+            if matches!(
+                self.history.selection,
+                Some(HistorySelection::Commit { .. })
+            ) && git::is_ancestor(&worktree_path, &target, &self.repository.base)?
+            {
+                git::history_branch_ref(&worktree_path, &target, &self.repository.base)?
+            } else {
+                None
+            };
+        let comparison_base = git::history_comparison_base(
             &worktree_path,
             &target,
             &self.repository.base,
             comparison_ref.as_deref(),
         )?;
+        self.history.range_commits =
+            git::history_range_commits_from_base(&worktree_path, &target, &comparison_base)?;
+        self.history.comparison_base = Some(comparison_base);
         Ok(())
     }
 
@@ -1238,7 +1252,6 @@ impl App {
             .selected_worktree()
             .map(|worktree| worktree.path.clone())
             .context("no worktree is selected")?;
-        let comparison_ref = git::history_branch_ref(&worktree_path, hash, &self.repository.base)?;
         let commit = self
             .history
             .commits
@@ -1251,7 +1264,7 @@ impl App {
             self.changes.diff_view,
             self.changes.mode,
             &self.repository.base,
-            comparison_ref.as_deref(),
+            self.history.comparison_base.as_deref(),
         )?;
         self.changes.install_files(files);
         let selected_path = self
@@ -2342,6 +2355,7 @@ mod tests {
                 remote_base_hash: None,
                 branch_tips: HashMap::new(),
                 head_hash: None,
+                comparison_base: None,
                 selection: None,
                 preferred_file: None,
             },
