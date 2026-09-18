@@ -43,6 +43,7 @@ impl App {
             KeyCode::Esc if self.view.focus != Focus::Diff => self.clear_filter(self.view.focus),
             KeyCode::Char('?') => self.view.show_help = true,
             KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('f') => self.toggle_follow_changes(),
             KeyCode::Char('o') => self.open_selected_worktree(),
             KeyCode::Char('d') if self.view.focus == Focus::Worktrees => {
                 self.request_worktree_removal()
@@ -78,6 +79,11 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn toggle_follow_changes(&mut self) {
+        self.view.follow_changes = !self.view.follow_changes;
+        self.view.status = None;
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, areas: [Rect; 3]) {

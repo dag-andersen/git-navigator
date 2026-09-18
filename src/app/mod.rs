@@ -13,8 +13,8 @@ use std::{
 use crate::{
     git,
     model::{
-        ChangeMode, ChangedFile, Commit, DiffLayout, DiffView, FileTreeRow, HistorySelection,
-        Worktree,
+        ChangeMode, ChangedFile, Commit, DiffLayout, DiffRowKind, DiffView, FileTreeRow,
+        HistorySelection, Worktree,
     },
 };
 use anyhow::{Context, Result};
@@ -236,6 +236,7 @@ pub struct ViewState {
     pub worktree_filter: String,
     pub file_filter: String,
     pub search: Option<SearchState>,
+    pub follow_changes: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -420,6 +421,7 @@ impl App {
                 worktree_filter: String::new(),
                 file_filter: String::new(),
                 search: None,
+                follow_changes: false,
             },
         })
     }
@@ -812,6 +814,14 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
+        self.refresh_with_paths(None);
+    }
+
+    pub fn refresh_following(&mut self, paths: &[PathBuf]) {
+        self.refresh_with_paths(Some(paths));
+    }
+
+    fn refresh_with_paths(&mut self, changed_paths: Option<&[PathBuf]>) {
         let snapshot = self.repository_snapshot();
 
         match git::discover_worktrees(&self.repository.directory) {
@@ -882,9 +892,60 @@ impl App {
                         snapshot.diff_position.as_ref(),
                     );
                 }
+                if let Some(paths) = changed_paths {
+                    self.follow_changed_paths(paths);
+                }
             }
             Err(error) => self.set_error(format!("Refresh failed: {error:#}")),
         }
+    }
+
+    fn follow_changed_paths(&mut self, changed_paths: &[PathBuf]) {
+        if self.history_commit_selected() {
+            return;
+        }
+        let Some(worktree_path) = self
+            .selected_worktree()
+            .map(|worktree| worktree.path.clone())
+        else {
+            return;
+        };
+        let selected_path = changed_paths.iter().rev().find_map(|path| {
+            let relative = path.strip_prefix(&worktree_path).ok()?;
+            self.changes
+                .file_index(relative)
+                .and_then(|index| self.changes.files().get(index))
+                .map(|file| file.path.clone())
+        });
+        let Some(selected_path) = selected_path else {
+            return;
+        };
+        self.select_file_path(Some(selected_path));
+        self.select_latest_diff_row();
+    }
+
+    fn select_latest_diff_row(&mut self) {
+        let Some(file) = self.selected_file() else {
+            self.changes.diff_state.select(None);
+            return;
+        };
+        let mut row = None;
+        let mut offset = 0;
+        for hunk in &file.hunks {
+            row = Some(offset);
+            for diff_row in &hunk.rows {
+                offset += 1;
+                if matches!(
+                    diff_row.kind,
+                    DiffRowKind::Added | DiffRowKind::Deleted | DiffRowKind::Modified
+                ) {
+                    row = Some(offset);
+                }
+            }
+            offset += 1;
+        }
+        self.changes.diff_state.select(row);
+        *self.changes.diff_state.offset_mut() = row.unwrap_or(0);
     }
 
     fn request_worktree_removal(&mut self) {
@@ -1359,6 +1420,74 @@ mod tests {
             app.selected_location(),
             Some("/repo/worktree/src/main.rs:5".into())
         );
+    }
+
+    #[test]
+    fn follow_toggle_selects_latest_changed_file_and_diff_row() {
+        let mut app = test_app();
+        app.repository.worktrees = vec![Worktree {
+            path: PathBuf::from("/repo"),
+            branch: "main".into(),
+            head: "12345678".into(),
+            dirty: true,
+            is_current: true,
+            is_main: true,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        }];
+        app.repository.worktree_state.select(Some(0));
+        let mut first = ChangedFile::empty(PathBuf::from("first.txt"), FileStatus::Modified);
+        first.hunks.push(DiffHunk {
+            id: crate::model::HunkId::synthetic("first"),
+            header: "@@".into(),
+            kind: HunkKind::Unstaged,
+            collapsed: false,
+            rows: vec![DiffRow {
+                old_number: Some(1),
+                new_number: Some(1),
+                old_text: Some("old".into()),
+                new_text: Some("new".into()),
+                kind: DiffRowKind::Modified,
+            }],
+        });
+        let mut second = ChangedFile::empty(PathBuf::from("src/second.txt"), FileStatus::Untracked);
+        second.hunks.push(DiffHunk {
+            id: crate::model::HunkId::synthetic("second"),
+            header: "@@".into(),
+            kind: HunkKind::Untracked,
+            collapsed: false,
+            rows: vec![DiffRow {
+                old_number: None,
+                new_number: Some(1),
+                old_text: None,
+                new_text: Some("new file".into()),
+                kind: DiffRowKind::Added,
+            }],
+        });
+        app.changes.install_files(vec![first, second]);
+        app.select_file_path(Some(PathBuf::from("first.txt")));
+        app.view.follow_changes = true;
+
+        app.follow_changed_paths(&[PathBuf::from("/repo/src/second.txt")]);
+
+        assert_eq!(
+            app.selected_file().map(|file| file.path.as_path()),
+            Some(Path::new("src/second.txt"))
+        );
+        assert_eq!(app.changes.diff_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn follow_toggle_is_off_by_default_and_can_be_changed_with_f() {
+        let mut app = test_app();
+        assert!(!app.view.follow_changes);
+        app.handle_key(key(KeyCode::Char('f')));
+        assert!(app.view.follow_changes);
+        assert!(app.view.status.is_none());
+        app.handle_key(key(KeyCode::Char('f')));
+        assert!(!app.view.follow_changes);
+        assert!(app.view.status.is_none());
     }
 
     #[test]
@@ -2221,6 +2350,7 @@ mod tests {
                 worktree_filter: String::new(),
                 file_filter: String::new(),
                 search: None,
+                follow_changes: false,
             },
         }
     }

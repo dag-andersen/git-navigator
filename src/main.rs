@@ -106,8 +106,14 @@ fn run_app(
 ) -> std::io::Result<()> {
     loop {
         let now = Instant::now();
-        if auto_refresh.should_refresh(now) && !app.modal_open() {
-            app.refresh();
+        if !app.modal_open()
+            && let Some(paths) = auto_refresh.refresh_paths(now)
+        {
+            if app.view.follow_changes {
+                app.refresh_following(&paths);
+            } else {
+                app.refresh();
+            }
             auto_refresh.mark_refreshed(now);
             auto_refresh.watch_worktree(
                 app.selected_worktree()

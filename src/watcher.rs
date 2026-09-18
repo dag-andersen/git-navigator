@@ -34,23 +34,25 @@ impl AutoRefresh {
     }
 
     pub fn watch_worktree(&mut self, worktree: Option<&Path>, now: Instant) {
-        if self.watched_worktree.as_deref() == worktree {
+        if self.backend.is_some() && self.watched_worktree.as_deref() == worktree {
             return;
         }
-        self.watched_worktree = worktree.map(Path::to_path_buf);
         self.backend = WatchBackend::new(&self.repository, worktree).ok();
+        self.watched_worktree = worktree.map(Path::to_path_buf);
         self.schedule.mark_refreshed(now);
     }
 
-    pub fn should_refresh(&mut self, now: Instant) -> bool {
+    pub fn refresh_paths(&mut self, now: Instant) -> Option<Vec<PathBuf>> {
         if let Some(backend) = &mut self.backend {
             while let Some(event) = backend.next_event() {
-                if event.is_some_and(is_relevant_event) {
-                    self.schedule.note_event(now);
+                if let Some(event) = event.filter(is_relevant_event) {
+                    self.schedule.note_event(now, event.paths);
                 }
             }
         }
-        self.schedule.should_refresh(now)
+        self.schedule
+            .should_refresh(now)
+            .then(|| self.schedule.pending_paths.clone())
     }
 
     pub fn mark_refreshed(&mut self, now: Instant) {
@@ -93,7 +95,7 @@ impl WatchBackend {
     }
 }
 
-fn is_relevant_event(event: Event) -> bool {
+fn is_relevant_event(event: &Event) -> bool {
     !matches!(event.kind, EventKind::Access(_))
 }
 
@@ -101,6 +103,7 @@ fn is_relevant_event(event: Event) -> bool {
 struct RefreshSchedule {
     pending_since: Option<Instant>,
     last_event: Option<Instant>,
+    pending_paths: Vec<PathBuf>,
     last_refresh: Instant,
     next_reconcile: Instant,
 }
@@ -110,14 +113,16 @@ impl RefreshSchedule {
         Self {
             pending_since: None,
             last_event: None,
+            pending_paths: Vec::new(),
             last_refresh: now,
             next_reconcile: now + RECONCILE_INTERVAL,
         }
     }
 
-    fn note_event(&mut self, now: Instant) {
+    fn note_event(&mut self, now: Instant, paths: Vec<PathBuf>) {
         self.pending_since.get_or_insert(now);
         self.last_event = Some(now);
+        self.pending_paths.extend(paths);
     }
 
     fn should_refresh(&self, now: Instant) -> bool {
@@ -136,6 +141,7 @@ impl RefreshSchedule {
     fn mark_refreshed(&mut self, now: Instant) {
         self.pending_since = None;
         self.last_event = None;
+        self.pending_paths.clear();
         self.last_refresh = now;
         self.next_reconcile = now + RECONCILE_INTERVAL;
     }
@@ -149,12 +155,12 @@ mod tests {
     fn debounces_events_and_rate_limits_refreshes() {
         let start = Instant::now();
         let mut schedule = RefreshSchedule::new(start);
-        schedule.note_event(start + Duration::from_millis(100));
+        schedule.note_event(start + Duration::from_millis(100), Vec::new());
         assert!(!schedule.should_refresh(start + Duration::from_millis(700)));
         assert!(schedule.should_refresh(start + Duration::from_secs(1)));
 
         schedule.mark_refreshed(start + Duration::from_secs(1));
-        schedule.note_event(start + Duration::from_millis(1_100));
+        schedule.note_event(start + Duration::from_millis(1_100), Vec::new());
         assert!(!schedule.should_refresh(start + Duration::from_millis(1_800)));
         assert!(schedule.should_refresh(start + Duration::from_secs(2)));
     }
@@ -164,9 +170,23 @@ mod tests {
         let start = Instant::now();
         let mut schedule = RefreshSchedule::new(start);
         for millis in [100, 400, 800, 1_200, 1_600, 2_000] {
-            schedule.note_event(start + Duration::from_millis(millis));
+            schedule.note_event(start + Duration::from_millis(millis), Vec::new());
         }
         assert!(schedule.should_refresh(start + Duration::from_millis(2_100)));
+    }
+
+    #[test]
+    fn retains_paths_for_the_refresh_that_follows_a_file_event() {
+        let start = Instant::now();
+        let mut schedule = RefreshSchedule::new(start);
+        let path = PathBuf::from("src/main.rs");
+        schedule.note_event(start + Duration::from_millis(100), vec![path.clone()]);
+
+        assert!(schedule.should_refresh(start + Duration::from_secs(1)));
+        assert_eq!(schedule.pending_paths, vec![path]);
+
+        schedule.mark_refreshed(start + Duration::from_secs(1));
+        assert!(schedule.pending_paths.is_empty());
     }
 
     #[test]

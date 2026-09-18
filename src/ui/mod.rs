@@ -270,6 +270,14 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(" git-navigator ", Style::new().bold()),
             mode,
+            if app.view.follow_changes {
+                Span::styled(
+                    " FOLLOWING ",
+                    Style::new().fg(Color::Black).bg(Color::Green).bold(),
+                )
+            } else {
+                Span::raw("")
+            },
             Span::raw("  "),
             Span::styled(worktree, Style::new().fg(Color::Gray)),
         ]),
@@ -557,7 +565,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else if let Some(status) = &app.view.status {
         status_line(status.kind, &status.text)
     } else {
-        navigation_line(app.view.focus, app.view.expanded)
+        navigation_line(app.view.focus, app.view.expanded, app.view.follow_changes)
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -585,7 +593,7 @@ fn search_line(focus: Focus, query: &str) -> Line<'static> {
     ])
 }
 
-fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
+fn navigation_line(focus: Focus, expanded: bool, follow_changes: bool) -> Line<'static> {
     let mut spans = vec![
         Span::styled("←/→", Style::new().fg(Color::Cyan)),
         Span::raw(" panes  "),
@@ -599,6 +607,12 @@ fn navigation_line(focus: Focus, expanded: bool) -> Line<'static> {
         Span::raw(" layout  "),
         Span::styled("r", Style::new().fg(Color::Cyan)),
         Span::raw(" refresh  "),
+        Span::styled("f", Style::new().fg(Color::Cyan)),
+        Span::raw(if follow_changes {
+            " follow:on  "
+        } else {
+            " follow:off  "
+        }),
     ];
     if focus == Focus::Diff {
         spans.extend([
@@ -672,6 +686,7 @@ fn render_help(frame: &mut Frame) {
         help_line("c", "Copy selected file path and line"),
         help_line("/", "Search the focused panel"),
         help_line("r", "Refresh worktrees and changes"),
+        help_line("f", "Toggle following the latest changed file and diff"),
         help_line("o", "Open the selected worktree in the default editor"),
         help_line("d", "Clean up the selected worktree"),
         help_line("? / Esc", "Close this help"),
@@ -800,9 +815,9 @@ mod tests {
 
     #[test]
     fn cleanup_shortcut_is_only_shown_for_worktree_focus() {
-        let worktree_footer = line_text(&navigation_line(Focus::Worktrees, false));
-        let files_footer = line_text(&navigation_line(Focus::Files, false));
-        let diff_footer = line_text(&navigation_line(Focus::Diff, false));
+        let worktree_footer = line_text(&navigation_line(Focus::Worktrees, false, false));
+        let files_footer = line_text(&navigation_line(Focus::Files, false, false));
+        let diff_footer = line_text(&navigation_line(Focus::Diff, false, false));
 
         assert!(worktree_footer.contains("d clean worktree"));
         assert!(!files_footer.contains("d clean worktree"));
@@ -826,12 +841,12 @@ mod tests {
     #[test]
     fn expansion_shortcut_describes_the_next_action() {
         assert!(
-            navigation_line(Focus::Diff, false)
+            navigation_line(Focus::Diff, false, false)
                 .to_string()
                 .contains("Space expand")
         );
         assert!(
-            navigation_line(Focus::Diff, true)
+            navigation_line(Focus::Diff, true, false)
                 .to_string()
                 .contains("Space minimize")
         );
@@ -1082,6 +1097,7 @@ mod tests {
                 worktree_filter: String::new(),
                 file_filter: String::new(),
                 search: None,
+                follow_changes: false,
             },
         };
         app.repository
@@ -1120,6 +1136,23 @@ mod tests {
         assert!(rendered.contains("after"));
         assert!(rendered.contains('▲'));
         assert!(rendered.contains('▼'));
+        assert!(!rendered.contains("FOLLOWING"));
+
+        app.view.follow_changes = true;
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("following header should render");
+        let rendered_following: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            rendered_following.contains("BRANCH") || rendered_following.contains("UNCOMMITTED")
+        );
+        assert!(rendered_following.contains("FOLLOWING"));
 
         app.repository
             .worktree_state
@@ -1237,6 +1270,7 @@ mod tests {
                 worktree_filter: String::new(),
                 file_filter: String::new(),
                 search: None,
+                follow_changes: false,
             },
         };
 

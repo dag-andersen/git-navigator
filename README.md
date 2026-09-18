@@ -22,6 +22,7 @@ It is written in Rust with [Ratatui](https://ratatui.rs/).
 - Copy an absolute `path:line` location from the selected Diff row
 - Open the selected worktree in the default editor
 - Automatically refresh when files, commits, or worktrees change
+- Optionally follow the latest changed file and diff with `f`
 - Collapse and expand individual Diff hunks
 - Wrap long Diff lines when needed
 - Expand any panel while retaining compact navigation rails
@@ -91,6 +92,8 @@ Selecting an item with the keyboard or a mouse click updates the panels to its r
 ### Panel layouts
 
 Press `t` to cycle through the available layouts.
+
+Press `f` to toggle following filesystem changes. With follow disabled, automatic refreshes preserve the selected file and diff position when possible. With follow enabled, the view selects the changed file and jumps to its latest changed diff row.
 
 #### Columns
 

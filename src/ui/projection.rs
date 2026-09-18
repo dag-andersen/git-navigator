@@ -126,6 +126,7 @@ mod tests {
                 worktree_filter: "agent".into(),
                 file_filter: "main".into(),
                 search: None,
+                follow_changes: false,
             },
         };
 
