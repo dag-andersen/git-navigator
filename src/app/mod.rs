@@ -659,22 +659,26 @@ impl App {
                         .selected_worktree()
                         .map(|worktree| worktree.path.clone())
                     {
-                        match git::commit_history(&worktree_path) {
-                            Ok(commits) => {
-                                self.commits = commits;
-                                self.branch_tips =
-                                    git::branch_tips(&worktree_path).unwrap_or_default();
-                                self.history_head_hash = git::head_hash(&worktree_path).ok();
-                                let (local_base_hash, remote_base_hash) =
-                                    git::base_tip_hashes(&worktree_path, &self.base);
-                                self.local_base_hash = local_base_hash;
-                                self.remote_base_hash = remote_base_hash;
-                            }
-                            Err(error) => {
-                                self.set_error(format!("Refresh failed: {error:#}"));
-                                return;
+                        let branch_tips = git::branch_tips(&worktree_path).unwrap_or_default();
+                        let history_head_hash = git::head_hash(&worktree_path).ok();
+                        let history_changed = self.commits.is_empty()
+                            || self.branch_tips != branch_tips
+                            || self.history_head_hash != history_head_hash;
+                        if history_changed {
+                            match git::commit_history(&worktree_path) {
+                                Ok(commits) => self.commits = commits,
+                                Err(error) => {
+                                    self.set_error(format!("Refresh failed: {error:#}"));
+                                    return;
+                                }
                             }
                         }
+                        self.branch_tips = branch_tips;
+                        self.history_head_hash = history_head_hash;
+                        let (local_base_hash, remote_base_hash) =
+                            git::base_tip_hashes(&worktree_path, &self.base);
+                        self.local_base_hash = local_base_hash;
+                        self.remote_base_hash = remote_base_hash;
                     }
                     self.selected_commit = history_selection_after_refresh(
                         history_wip_selected,

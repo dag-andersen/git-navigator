@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     app::App,
@@ -19,6 +19,7 @@ fn display_rows_for(
     head_hash: Option<&str>,
 ) -> Vec<HistoryRow> {
     let mut rows = Vec::new();
+    let mut newer_parents = HashSet::new();
     for (index, commit) in commits.iter().enumerate() {
         rows.extend(
             commit
@@ -34,16 +35,14 @@ fn display_rows_for(
             });
         }
         if let Some(names) = branch_tips.get(&commit.hash) {
-            let connected = commits[..index]
-                .iter()
-                .any(|newer| newer.parents.iter().any(|parent| parent == &commit.hash));
             rows.push(HistoryRow::BranchLabel {
                 graph: commit.graph.last().cloned().unwrap_or_else(|| "●".into()),
                 names: names.clone(),
-                connected,
+                connected: newer_parents.contains(commit.hash.as_str()),
             });
         }
         rows.push(HistoryRow::Commit { index });
+        newer_parents.extend(commit.parents.iter().map(String::as_str));
     }
     if !rows.iter().any(|row| matches!(row, HistoryRow::Wip { .. })) {
         rows.insert(

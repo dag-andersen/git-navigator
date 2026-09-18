@@ -16,7 +16,9 @@ const SELECTED: Style = Style::new()
     .add_modifier(ratatui::style::Modifier::BOLD);
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
-    let items = items(app);
+    let rows = display_rows(app);
+    let selected = visual_index_for_rows(&rows, app.selected_commit);
+    let items = items(app, rows);
     let branch = app
         .worktrees
         .iter()
@@ -29,14 +31,13 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
         .highlight_style(SELECTED)
         .highlight_symbol("› ");
     let mut state = app.history_state;
-    state.select(visual_index(app, app.selected_commit));
+    state.select(selected);
     frame.render_stateful_widget(list, area, &mut state);
     *app.history_state.offset_mut() = state.offset();
 }
 
-fn items(app: &App) -> Vec<ListItem<'static>> {
-    display_rows(app)
-        .into_iter()
+fn items(app: &App, rows: Vec<crate::model::HistoryRow>) -> Vec<ListItem<'static>> {
+    rows.into_iter()
         .map(|row| match row {
             crate::model::HistoryRow::Wip { graph } => {
                 let mut line =
@@ -87,7 +88,16 @@ fn items(app: &App) -> Vec<ListItem<'static>> {
 
 pub(crate) fn visual_index(app: &App, selected_commit: Option<usize>) -> Option<usize> {
     let target = selected_commit?;
-    display_rows(app).iter().position(|row| match row {
+    let rows = display_rows(app);
+    visual_index_for_rows(&rows, Some(target))
+}
+
+fn visual_index_for_rows(
+    rows: &[crate::model::HistoryRow],
+    selected_commit: Option<usize>,
+) -> Option<usize> {
+    let target = selected_commit?;
+    rows.iter().position(|row| match row {
         crate::model::HistoryRow::Wip { .. } => target == 0,
         crate::model::HistoryRow::Commit { index } => target == index + 1,
         crate::model::HistoryRow::Graph(_) | crate::model::HistoryRow::BranchLabel { .. } => false,
