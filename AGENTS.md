@@ -73,8 +73,9 @@ Perform all implementation work in the new worktree. When the task is complete:
 1. Commit only the files related to the task.
 2. Run the complete required verification workflow in the feature worktree.
 3. Push the feature branch if needed.
-4. Report the branch, worktree, commit, and verification result.
-5. Wait for an explicit request before merging into `main`.
+4. State if the new changes may introduce performance problems or other concerns.
+5. Report the branch, worktree, commit, and verification result.
+6. Wait for an explicit request before merging into `main`.
 
 ## Merging into main
 
