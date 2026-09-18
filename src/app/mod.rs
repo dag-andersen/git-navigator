@@ -1,12 +1,12 @@
 mod diff;
 mod files;
-mod history;
+pub(crate) mod history;
 mod input;
 mod navigation;
 mod search;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -175,6 +175,8 @@ pub struct App {
     pub history_range_commits: HashSet<String>,
     pub local_base_hash: Option<String>,
     pub remote_base_hash: Option<String>,
+    pub branch_tips: HashMap<String, Vec<String>>,
+    pub history_head_hash: Option<String>,
     pub selected_commit: Option<usize>,
     pub history_preferred_file: Option<PathBuf>,
 }
@@ -214,6 +216,8 @@ impl App {
         } else {
             git::base_tip_hashes(&worktrees[selected_worktree].path, &base)
         };
+        let branch_tips = git::branch_tips(&worktrees[selected_worktree].path)?;
+        let history_head_hash = git::head_hash(&worktrees[selected_worktree].path).ok();
         let mut worktree_state = ListState::default();
         worktree_state.select(Some(selected_worktree));
         let mut history_state = ListState::default();
@@ -269,6 +273,8 @@ impl App {
             history_range_commits: HashSet::new(),
             local_base_hash,
             remote_base_hash,
+            branch_tips,
+            history_head_hash,
             selected_commit: (!has_linked_worktrees).then_some(0),
             history_preferred_file,
         })
@@ -367,6 +373,8 @@ impl App {
                 .map(|worktree| worktree.path.clone())
                 .context("no worktree is selected")?;
             self.commits = git::commit_history(&worktree_path)?;
+            self.branch_tips = git::branch_tips(&worktree_path)?;
+            self.history_head_hash = git::head_hash(&worktree_path).ok();
             (self.local_base_hash, self.remote_base_hash) =
                 git::base_tip_hashes(&worktree_path, &self.base);
             self.worktree_panel = WorktreePanel::History;
@@ -654,6 +662,9 @@ impl App {
                         match git::commit_history(&worktree_path) {
                             Ok(commits) => {
                                 self.commits = commits;
+                                self.branch_tips =
+                                    git::branch_tips(&worktree_path).unwrap_or_default();
+                                self.history_head_hash = git::head_hash(&worktree_path).ok();
                                 let (local_base_hash, remote_base_hash) =
                                     git::base_tip_hashes(&worktree_path, &self.base);
                                 self.local_base_hash = local_base_hash;
@@ -897,6 +908,8 @@ impl App {
                 self.history_preferred_file = self.selected_file().map(|file| file.path.clone());
                 self.focus = Focus::Worktrees;
                 self.commits = commits;
+                self.branch_tips = git::branch_tips(&worktree_path).unwrap_or_default();
+                self.history_head_hash = git::head_hash(&worktree_path).ok();
                 let (local_base_hash, remote_base_hash) =
                     git::base_tip_hashes(&worktree_path, &self.base);
                 self.local_base_hash = local_base_hash;
@@ -915,22 +928,25 @@ impl App {
     }
 
     fn move_commit(&mut self, delta: isize) {
-        let next = moved_selection(
-            self.selected_commit.or(Some(0)),
-            self.commits.len().saturating_add(1),
-            delta,
-        );
-        if next == self.selected_commit {
+        let selectable = history::selectable_indices(self);
+        let current = self
+            .selected_commit
+            .and_then(|selected| selectable.iter().position(|index| *index == selected));
+        let Some(next_position) = moved_selection(current, selectable.len(), delta) else {
+            return;
+        };
+        let next = selectable[next_position];
+        if Some(next) == self.selected_commit {
             return;
         }
-        self.selected_commit = next;
+        self.selected_commit = Some(next);
         self.history_state
-            .select(crate::ui::history_visual_index(self, next));
+            .select(crate::ui::history_visual_index(self, Some(next)));
         if let Err(error) = self.update_history_range() {
             self.set_error(format!("Could not update history range: {error:#}"));
             return;
         }
-        if next == Some(0) {
+        if next == 0 {
             let preferred = self.history_preferred_file.clone();
             self.reload_files(preferred.as_deref());
         } else {
@@ -1949,6 +1965,8 @@ mod tests {
             history_range_commits: HashSet::new(),
             local_base_hash: None,
             remote_base_hash: None,
+            branch_tips: HashMap::new(),
+            history_head_hash: None,
             selected_commit: None,
             history_preferred_file: None,
         }

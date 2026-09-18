@@ -1081,6 +1081,8 @@ mod tests {
             history_range_commits: std::collections::HashSet::new(),
             local_base_hash: None,
             remote_base_hash: None,
+            branch_tips: std::collections::HashMap::new(),
+            history_head_hash: None,
             selected_commit: None,
             history_preferred_file: None,
         };
@@ -1216,6 +1218,8 @@ mod tests {
             history_range_commits: ["middle".to_string()].into_iter().collect(),
             local_base_hash: None,
             remote_base_hash: None,
+            branch_tips: std::collections::HashMap::new(),
+            history_head_hash: None,
             selected_commit: Some(2),
             history_preferred_file: None,
         };

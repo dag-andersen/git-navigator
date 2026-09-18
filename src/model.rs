@@ -83,6 +83,14 @@ pub struct Commit {
     pub graph: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoryRow {
+    Wip { graph: String },
+    Graph(String),
+    BranchLabel { graph: String, names: Vec<String> },
+    Commit { index: usize },
+}
+
 impl Worktree {
     pub fn is_missing(&self) -> bool {
         !self.available || self.prunable_reason.is_some()

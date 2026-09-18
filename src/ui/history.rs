@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, Focus},
+    app::{App, Focus, history::display_rows},
     model::ChangeMode,
 };
 
@@ -29,71 +29,75 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
 }
 
 fn items(app: &App) -> Vec<ListItem<'static>> {
-    let mut items = Vec::with_capacity(app.commits.len() + 2);
-    items.push(ListItem::new(Line::from(vec![
-        node(wip_is_in_branch_diff(app)),
-        Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
-        Span::raw("Uncommitted changes"),
-    ])));
-
-    for (index, commit) in app.commits.iter().enumerate() {
-        let active = commit_is_in_branch_diff(app, index);
-        let graph_lines = commit
-            .graph
-            .iter()
-            .take(commit.graph.len().saturating_sub(1))
-            .map(|graph| graph_line(graph, active, None))
-            .collect::<Vec<_>>();
-        items.extend(graph_lines.into_iter().map(ListItem::new));
-        let graph = graph_line(
-            commit.graph.last().map(String::as_str).unwrap_or("●"),
-            active,
-            base_node(app, &commit.hash),
-        );
-        let mut commit_line = graph;
-        commit_line.spans.extend([
-            Span::styled(
-                format!("{} ", commit.short_hash),
-                Style::new().fg(Color::Cyan),
-            ),
-            Span::raw(commit.subject.clone()),
-        ]);
-        items.push(ListItem::new(commit_line));
-    }
-    items
+    display_rows(app)
+        .into_iter()
+        .map(|row| match row {
+            crate::model::HistoryRow::Wip { graph } => {
+                let mut line =
+                    graph_line_with_marker(&graph, wip_is_in_branch_diff(app), Some('○'), None);
+                line.spans.extend([
+                    Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
+                    Span::raw("Uncommitted changes"),
+                ]);
+                ListItem::new(line)
+            }
+            crate::model::HistoryRow::Graph(graph) => {
+                ListItem::new(graph_line(&graph, false, None))
+            }
+            crate::model::HistoryRow::BranchLabel { graph, names } => {
+                let mut label = graph_line(&graph, false, Some('#'));
+                label.spans.push(Span::styled(
+                    names.join(", "),
+                    Style::new().fg(Color::DarkGray),
+                ));
+                ListItem::new(label)
+            }
+            crate::model::HistoryRow::Commit { index } => {
+                let commit = &app.commits[index];
+                let graph = graph_line(
+                    commit.graph.last().map(String::as_str).unwrap_or("●"),
+                    commit_is_in_branch_diff(app, index),
+                    base_node(app, &commit.hash),
+                );
+                let mut line = graph;
+                line.spans.extend([
+                    Span::styled(
+                        format!("{} ", commit.short_hash),
+                        Style::new().fg(Color::Cyan),
+                    ),
+                    Span::raw(commit.subject.clone()),
+                ]);
+                ListItem::new(line)
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn visual_index(app: &App, selected_commit: Option<usize>) -> Option<usize> {
     let target = selected_commit?;
-    let mut visual_index = 1;
-    if target == 0 {
-        return Some(0);
-    }
-
-    for (index, commit) in app.commits.iter().enumerate() {
-        if target == index + 1 {
-            return Some(visual_index + commit.graph.len().saturating_sub(1));
-        }
-        visual_index += commit.graph.len();
-    }
-    None
-}
-
-fn node(active: bool) -> Span<'static> {
-    if active {
-        Span::styled("○ ", Style::new().fg(Color::LightGreen).bold())
-    } else {
-        Span::styled("○ ", Style::new().fg(Color::Cyan))
-    }
+    display_rows(app).iter().position(|row| match row {
+        crate::model::HistoryRow::Wip { .. } => target == 0,
+        crate::model::HistoryRow::Commit { index } => target == index + 1,
+        crate::model::HistoryRow::Graph(_) | crate::model::HistoryRow::BranchLabel { .. } => false,
+    })
 }
 
 pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Line<'static> {
+    graph_line_with_marker(graph, active, marker, Some(Color::Red))
+}
+
+fn graph_line_with_marker(
+    graph: &str,
+    active: bool,
+    marker: Option<char>,
+    marker_color: Option<Color>,
+) -> Line<'static> {
     let mut spans = Vec::new();
     let graph_style = Style::new().fg(Color::DarkGray);
     for character in graph.chars() {
         let style = if character == '●' {
-            let color = if marker.is_some() {
-                Color::Red
+            let color = if let Some(marker_color) = marker_color.filter(|_| marker.is_some()) {
+                marker_color
             } else if active {
                 Color::Blue
             } else {

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -94,11 +94,48 @@ pub fn commit_history(worktree: &Path) -> Result<Vec<Commit>> {
     Ok(parse_commit_history(&output))
 }
 
+pub fn head_hash(worktree: &Path) -> Result<String> {
+    Ok(git_text(worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
 pub fn base_tip_hashes(worktree: &Path, base: &str) -> (Option<String>, Option<String>) {
     (
         resolve_ref_hash(worktree, base),
         resolve_ref_hash(worktree, &format!("origin/{base}")),
     )
+}
+
+pub fn branch_tips(worktree: &Path) -> Result<HashMap<String, Vec<String>>> {
+    let output = git_text(
+        worktree,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)\t%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let mut tips = HashMap::<String, Vec<String>>::new();
+    for line in output.lines() {
+        let Some((hash, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(name) = reference
+            .strip_prefix("refs/heads/")
+            .or_else(|| reference.strip_prefix("refs/remotes/"))
+        else {
+            continue;
+        };
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        tips.entry((*hash).to_string())
+            .or_default()
+            .push((*name).to_string());
+    }
+    Ok(tips)
 }
 
 fn parse_commit_history(output: &str) -> Vec<Commit> {
@@ -1165,6 +1202,31 @@ index 1111111..0000000
             .expect("history range should load");
         assert!(range.contains(&head));
         assert!(!range.contains(&base));
+    }
+
+    #[test]
+    fn groups_local_and_remote_branch_tips_by_commit() {
+        let repository = TestRepository::new();
+        run_git(repository.path(), &["branch", "feature"]);
+        run_git(
+            repository.path(),
+            &["update-ref", "refs/remotes/origin/feature", "HEAD"],
+        );
+
+        let tips = branch_tips(repository.path()).expect("branch tips should load");
+        let head = git_text(repository.path(), &["rev-parse", "HEAD"])
+            .expect("head should resolve")
+            .trim()
+            .to_string();
+
+        assert_eq!(
+            tips.get(&head),
+            Some(&vec![
+                "feature".into(),
+                "main".into(),
+                "origin/feature".into()
+            ])
+        );
     }
 
     #[test]
