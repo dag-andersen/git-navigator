@@ -22,8 +22,9 @@ Cargo bin directory.
 - Do not create a pull request or merge into `main` unless explicitly asked.
 - Do not modify unrelated files. Preserve unrelated changes and untracked files,
   especially `test.txt`.
-- Do not use force push, hard reset, rebase, or cleanup commands without explicit
-  permission.
+- Do not use force push, hard reset, or rebase without explicit permission.
+- Routine cleanup of a completed feature branch and its linked worktree is
+  allowed when the user explicitly requests the merge and cleanup together.
 - Do not edit another agent's worktree or branch.
 - Use a regular hyphen instead of an em dash in prose, comments, and commits.
 
