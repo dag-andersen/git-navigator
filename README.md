@@ -170,7 +170,7 @@ Press `h` while Worktrees or Files is focused to replace the Worktrees panel wit
 History contains up to 100 commits and starts with a virtual WIP entry:
 
 ```text
-WIP       Uncommitted changes
+WIP       5 uncommitted changes
 736a5c4   Improve diff search and worktree layouts
 9b42ffd   Add search and copy navigation features
 ```

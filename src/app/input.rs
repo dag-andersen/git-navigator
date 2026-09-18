@@ -51,6 +51,9 @@ impl App {
             KeyCode::Char('h') if matches!(self.view.focus, Focus::Worktrees | Focus::Files) => {
                 self.toggle_history()
             }
+            KeyCode::Enter if self.view.focus == Focus::Worktrees && !self.history_active() => {
+                self.toggle_history()
+            }
             KeyCode::Tab => self.toggle_mode(),
             KeyCode::Char('v') => self.toggle_diff_view(),
             KeyCode::Char('s') => self.view.diff_layout = self.view.diff_layout.toggle(),

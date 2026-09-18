@@ -110,4 +110,12 @@ mod tests {
         assert!(cli.ansi);
         assert_eq!(cli.focus, Some(StartupFocus::History));
     }
+
+    #[test]
+    fn branch_mode_can_use_the_default_startup_focus() {
+        let cli = Cli::try_parse_from(["git-navigator", ".", "--ansi", "--mode", "branch"])
+            .expect("branch mode should be accepted without an explicit focus");
+        assert_eq!(cli.mode, RenderMode::Branch);
+        assert_eq!(cli.focus, None);
+    }
 }

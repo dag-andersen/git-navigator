@@ -109,6 +109,7 @@ pub struct ChangeState {
     pub mode: ChangeMode,
     pub diff_view: DiffView,
     files: Vec<ChangedFile>,
+    uncommitted_count: usize,
     file_tree: Vec<FileTreeRow>,
     file_lookup: files::FileLookup,
     pub file_state: ListState,
@@ -122,6 +123,7 @@ impl ChangeState {
             mode,
             diff_view,
             files: Vec::new(),
+            uncommitted_count: 0,
             file_tree: Vec::new(),
             file_lookup: files::FileLookup::default(),
             file_state: ListState::default(),
@@ -134,6 +136,14 @@ impl ChangeState {
         self.files = files;
         self.file_tree = build_file_tree(&self.files);
         self.file_lookup = files::FileLookup::build(&self.files, &self.file_tree);
+    }
+
+    pub(crate) fn set_uncommitted_count(&mut self, count: usize) {
+        self.uncommitted_count = count;
+    }
+
+    pub(crate) fn uncommitted_count(&self) -> usize {
+        self.uncommitted_count
     }
 
     pub(crate) fn clear_files(&mut self) {
@@ -211,7 +221,7 @@ impl ChangeState {
 #[derive(Debug)]
 pub struct HistoryState {
     pub list_state: ListState,
-    pub worktree_panel: WorktreePanel,
+    pub history_panel: HistoryPanel,
     pub commits: Vec<Commit>,
     pub range_commits: HashSet<String>,
     pub local_base_hash: Option<String>,
@@ -241,7 +251,7 @@ pub struct ViewState {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum WorktreePanel {
+pub enum HistoryPanel {
     #[default]
     Worktrees,
     History,
@@ -362,7 +372,9 @@ impl App {
         let mut history_state = ListState::default();
         history_state.select(Some(0));
         let mut changes = ChangeState::new(ChangeMode::Uncommitted, DiffView::Hunks);
+        let uncommitted_count = files.len();
         changes.install_files(files);
+        changes.set_uncommitted_count(uncommitted_count);
         let mut file_state = ListState::default();
         file_state.select(changes.first_file_row());
         let mut diff_state = TableState::default();
@@ -395,10 +407,10 @@ impl App {
             changes,
             history: HistoryState {
                 list_state: history_state,
-                worktree_panel: if has_linked_worktrees {
-                    WorktreePanel::Worktrees
+                history_panel: if has_linked_worktrees {
+                    HistoryPanel::Worktrees
                 } else {
-                    WorktreePanel::History
+                    HistoryPanel::History
                 },
                 commits,
                 range_commits: HashSet::new(),
@@ -524,7 +536,7 @@ impl App {
     }
 
     pub fn history_active(&self) -> bool {
-        self.history.worktree_panel == WorktreePanel::History
+        self.history.history_panel == HistoryPanel::History
     }
 
     pub fn history_commit_selected(&self) -> bool {
@@ -550,7 +562,7 @@ impl App {
             self.history.head_hash = git::head_hash(&worktree_path).ok();
             (self.history.local_base_hash, self.history.remote_base_hash) =
                 git::base_tip_hashes(&worktree_path, &self.repository.base);
-            self.history.worktree_panel = WorktreePanel::History;
+            self.history.history_panel = HistoryPanel::History;
             self.view.focus = Focus::Worktrees;
             self.history.selection = match selected_commit {
                 Some(hash) => {
@@ -848,6 +860,16 @@ impl App {
                     })
                     .or((!self.repository.worktrees.is_empty()).then_some(0));
                 self.repository.worktree_state.select(selected);
+                if let Some(worktree) = self.selected_worktree()
+                    && let Ok(files) = git::load_changes(
+                        &worktree.path,
+                        ChangeMode::Uncommitted,
+                        DiffView::Hunks,
+                        &self.repository.base,
+                    )
+                {
+                    self.changes.set_uncommitted_count(files.len());
+                }
                 if self.history_active() {
                     if let Some(worktree_path) = self
                         .selected_worktree()
@@ -1031,6 +1053,7 @@ impl App {
     ) {
         let Some(worktree) = self.selected_worktree() else {
             self.changes.clear_files();
+            self.changes.set_uncommitted_count(0);
             return;
         };
         let path = worktree.path.clone();
@@ -1042,10 +1065,20 @@ impl App {
                 .unwrap_or("working directory does not exist")
                 .to_string();
             self.changes.clear_files();
+            self.changes.set_uncommitted_count(0);
             self.set_error(format!(
                 "Unavailable worktree: {reason}. Press d in the Worktrees pane to clean it up"
             ));
             return;
+        }
+
+        if let Ok(files) = git::load_changes(
+            &path,
+            ChangeMode::Uncommitted,
+            DiffView::Hunks,
+            &self.repository.base,
+        ) {
+            self.changes.set_uncommitted_count(files.len());
         }
 
         match git::load_changes(
@@ -1136,7 +1169,7 @@ impl App {
             if !self.has_linked_worktrees() {
                 return;
             }
-            self.history.worktree_panel = WorktreePanel::Worktrees;
+            self.history.history_panel = HistoryPanel::Worktrees;
             self.history.selection = None;
             let preferred = self.history.preferred_file.take();
             self.reload_files(preferred.as_deref());
@@ -1160,7 +1193,7 @@ impl App {
                 self.history.local_base_hash = local_base_hash;
                 self.history.remote_base_hash = remote_base_hash;
                 self.history.selection = Some(HistorySelection::Wip);
-                self.history.worktree_panel = WorktreePanel::History;
+                self.history.history_panel = HistoryPanel::History;
                 if let Err(error) = self.update_history_range() {
                     self.set_error(format!("Could not update history range: {error:#}"));
                     return;
@@ -1979,7 +2012,7 @@ mod tests {
     fn panel_layout_cycle_includes_all_layouts_without_linked_worktrees() {
         let mut app = test_app();
         app.view.panel_layout = PanelLayout::Columns;
-        app.history.worktree_panel = WorktreePanel::History;
+        app.history.history_panel = HistoryPanel::History;
 
         app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(app.view.panel_layout, PanelLayout::SidebarLeft);
@@ -1994,7 +2027,7 @@ mod tests {
     #[test]
     fn history_mode_navigation_reaches_the_history_panel_without_linked_worktrees() {
         let mut app = test_app();
-        app.history.worktree_panel = WorktreePanel::History;
+        app.history.history_panel = HistoryPanel::History;
         app.view.focus = Focus::Files;
 
         app.handle_key(key(KeyCode::Left));
@@ -2060,7 +2093,7 @@ mod tests {
     #[test]
     fn tab_changes_comparison_mode_while_history_is_active() {
         let mut app = test_app();
-        app.history.worktree_panel = WorktreePanel::History;
+        app.history.history_panel = HistoryPanel::History;
         app.changes.mode = ChangeMode::Uncommitted;
 
         app.handle_key(key(KeyCode::Tab));
@@ -2072,7 +2105,7 @@ mod tests {
     #[test]
     fn wip_is_the_first_history_entry_and_uses_live_changes() {
         let mut app = test_app();
-        app.history.worktree_panel = WorktreePanel::History;
+        app.history.history_panel = HistoryPanel::History;
         app.history.commits = vec![Commit {
             hash: "1234567890abcdef".into(),
             parents: vec![],
@@ -2164,7 +2197,7 @@ mod tests {
     #[test]
     fn history_clicks_skip_graph_continuation_rows() {
         let mut app = test_app();
-        app.history.worktree_panel = WorktreePanel::History;
+        app.history.history_panel = HistoryPanel::History;
         app.history.commits = vec![
             Commit {
                 hash: "first".into(),
@@ -2330,10 +2363,10 @@ mod tests {
             .iter()
             .any(|worktree| !worktree.is_main);
         assert!(!has_linked_worktrees);
-        app.history.worktree_panel = if has_linked_worktrees {
-            WorktreePanel::Worktrees
+        app.history.history_panel = if has_linked_worktrees {
+            HistoryPanel::Worktrees
         } else {
-            WorktreePanel::History
+            HistoryPanel::History
         };
         app.history.selection = (!has_linked_worktrees).then_some(HistorySelection::Wip);
 
@@ -2352,7 +2385,7 @@ mod tests {
             changes: ChangeState::new(ChangeMode::Uncommitted, crate::model::DiffView::Hunks),
             history: HistoryState {
                 list_state: ListState::default(),
-                worktree_panel: WorktreePanel::Worktrees,
+                history_panel: HistoryPanel::Worktrees,
                 commits: Vec::new(),
                 range_commits: HashSet::new(),
                 local_base_hash: None,

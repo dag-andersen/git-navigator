@@ -20,7 +20,7 @@ use ratatui::crossterm::{
 };
 
 use crate::{
-    app::{App, Focus, WorktreePanel},
+    app::{App, Focus, HistoryPanel},
     cli::{Cli, RenderMode, StartupFocus},
     watcher::AutoRefresh,
 };
@@ -41,6 +41,14 @@ fn main() -> Result<()> {
         RenderMode::Uncommitted => crate::model::ChangeMode::Uncommitted,
         RenderMode::Branch => crate::model::ChangeMode::Branch,
     };
+    if cli.focus.is_none() {
+        app.history.history_panel = if app.has_linked_worktrees() {
+            HistoryPanel::Worktrees
+        } else {
+            HistoryPanel::History
+        };
+        app.view.focus = Focus::Worktrees;
+    }
     if cli.render {
         if cli.width == 0 || cli.height == 0 {
             bail!("render width and height must be greater than zero");
@@ -84,11 +92,11 @@ fn apply_startup_panel(app: &mut App, cli: &Cli) {
     };
     let panel = match focus {
         StartupFocus::History => {
-            app.history.worktree_panel = WorktreePanel::History;
+            app.history.history_panel = HistoryPanel::History;
             Focus::Worktrees
         }
         StartupFocus::Worktrees => {
-            app.history.worktree_panel = WorktreePanel::Worktrees;
+            app.history.history_panel = HistoryPanel::Worktrees;
             Focus::Worktrees
         }
         StartupFocus::Files => Focus::Files,

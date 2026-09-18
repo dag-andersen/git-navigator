@@ -1074,7 +1074,7 @@ mod tests {
             changes,
             history: crate::app::HistoryState {
                 list_state: ListState::default(),
-                worktree_panel: crate::app::WorktreePanel::Worktrees,
+                history_panel: crate::app::HistoryPanel::Worktrees,
                 commits: Vec::new(),
                 range_commits: std::collections::HashSet::new(),
                 local_base_hash: None,
@@ -1181,7 +1181,7 @@ mod tests {
         assert_eq!(scrollbar_position(1, 5, 3), 2);
         assert_eq!(scrollbar_position(2, 5, 3), 4);
 
-        app.history.worktree_panel = crate::app::WorktreePanel::History;
+        app.history.history_panel = crate::app::HistoryPanel::History;
         app.repository.worktree_state.select(Some(0));
         app.history.commits = vec![crate::model::Commit {
             hash: "base-hash".into(),
@@ -1247,7 +1247,7 @@ mod tests {
             changes: crate::app::ChangeState::new(ChangeMode::Branch, DiffView::Hunks),
             history: crate::app::HistoryState {
                 list_state: ListState::default(),
-                worktree_panel: crate::app::WorktreePanel::History,
+                history_panel: crate::app::HistoryPanel::History,
                 commits,
                 range_commits: ["middle".to_string()].into_iter().collect(),
                 local_base_hash: None,

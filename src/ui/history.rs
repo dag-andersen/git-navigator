@@ -48,7 +48,7 @@ fn items(app: &App, rows: Vec<HistoryRow>) -> Vec<ListItem<'static>> {
                     graph_line_with_marker(&graph, wip_is_in_branch_diff(app), Some('○'), None);
                 line.spans.extend([
                     Span::styled("WIP ", Style::new().fg(Color::Yellow).bold()),
-                    Span::raw("Uncommitted changes"),
+                    Span::raw(wip_label(app.changes.uncommitted_count())),
                 ]);
                 ListItem::new(line)
             }
@@ -93,6 +93,14 @@ fn items(app: &App, rows: Vec<HistoryRow>) -> Vec<ListItem<'static>> {
             }
         })
         .collect()
+}
+
+fn wip_label(change_count: usize) -> String {
+    match change_count {
+        0 => "no changes".into(),
+        1 => "1 uncommitted change".into(),
+        count => format!("{count} uncommitted changes"),
+    }
 }
 
 pub(crate) fn graph_line(graph: &str, active: bool, marker: Option<char>) -> Line<'static> {
@@ -152,4 +160,16 @@ pub(crate) fn commit_is_in_branch_diff(app: &App, hash: &str) -> bool {
         return false;
     }
     app.history.range_commits.contains(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wip_label;
+
+    #[test]
+    fn describes_wip_change_count() {
+        assert_eq!(wip_label(0), "no changes");
+        assert_eq!(wip_label(1), "1 uncommitted change");
+        assert_eq!(wip_label(5), "5 uncommitted changes");
+    }
 }

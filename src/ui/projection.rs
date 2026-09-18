@@ -40,8 +40,7 @@ mod tests {
     use super::*;
     use crate::{
         app::{
-            ChangeState, Focus, HistoryState, PanelLayout, RepositoryState, ViewState,
-            WorktreePanel,
+            ChangeState, Focus, HistoryPanel, HistoryState, PanelLayout, RepositoryState, ViewState,
         },
         model::{
             ChangeMode, ChangedFile, Commit, DiffHunk, DiffRow, DiffRowKind, DiffView, FileStatus,
@@ -103,7 +102,7 @@ mod tests {
             changes,
             history: HistoryState {
                 list_state: ListState::default(),
-                worktree_panel: WorktreePanel::Worktrees,
+                history_panel: HistoryPanel::Worktrees,
                 commits: Vec::<Commit>::new(),
                 range_commits: HashSet::new(),
                 local_base_hash: None,
