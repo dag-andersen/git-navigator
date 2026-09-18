@@ -1143,6 +1143,7 @@ mod tests {
         app.worktree_panel = crate::app::WorktreePanel::History;
         app.commits = vec![crate::model::Commit {
             hash: "base-hash".into(),
+            parents: vec![],
             short_hash: "base-has".into(),
             subject: "base commit".into(),
             graph: vec!["●".into()],
@@ -1158,6 +1159,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(rendered.contains("base-has"));
+        assert!(rendered.contains("History (2) - feature"));
         assert!(rendered.contains("base-has"));
     }
 
@@ -1166,24 +1168,28 @@ mod tests {
         let commits = vec![
             crate::model::Commit {
                 hash: "head".into(),
+                parents: vec![],
                 short_hash: "head".into(),
                 subject: "head commit".into(),
                 graph: vec!["●".into()],
             },
             crate::model::Commit {
                 hash: "middle".into(),
+                parents: vec![],
                 short_hash: "middle".into(),
                 subject: "middle commit".into(),
                 graph: vec!["│".into(), "●".into()],
             },
             crate::model::Commit {
                 hash: "base".into(),
+                parents: vec![],
                 short_hash: "base".into(),
                 subject: "base commit".into(),
                 graph: vec!["●".into()],
             },
             crate::model::Commit {
                 hash: "older".into(),
+                parents: vec![],
                 short_hash: "older".into(),
                 subject: "older commit".into(),
                 graph: vec!["●".into()],

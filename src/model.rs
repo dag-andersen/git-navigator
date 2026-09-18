@@ -78,6 +78,7 @@ pub struct Worktree {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Commit {
     pub hash: String,
+    pub parents: Vec<String>,
     pub short_hash: String,
     pub subject: String,
     pub graph: Vec<String>,
@@ -85,10 +86,18 @@ pub struct Commit {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryRow {
-    Wip { graph: String },
+    Wip {
+        graph: String,
+    },
     Graph(String),
-    BranchLabel { graph: String, names: Vec<String> },
-    Commit { index: usize },
+    BranchLabel {
+        graph: String,
+        names: Vec<String>,
+        connected: bool,
+    },
+    Commit {
+        index: usize,
+    },
 }
 
 impl Worktree {

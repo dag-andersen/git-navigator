@@ -87,7 +87,7 @@ pub fn commit_history(worktree: &Path) -> Result<Vec<Commit>> {
             "log",
             "--all",
             "--graph",
-            "--format=%x01%H%x00%h%x00%s",
+            "--format=%x01%H%x00%P%x00%h%x00%s",
             "--max-count=100",
         ],
     )?;
@@ -151,6 +151,9 @@ fn parse_commit_history(output: &str) -> Vec<Commit> {
         let Some(hash) = fields.next() else {
             continue;
         };
+        let Some(parents) = fields.next() else {
+            continue;
+        };
         let Some(short_hash) = fields.next() else {
             continue;
         };
@@ -161,6 +164,7 @@ fn parse_commit_history(output: &str) -> Vec<Commit> {
         pending_graph.push(graph_text(graph));
         commits.push(Commit {
             hash: hash.to_string(),
+            parents: parents.split_whitespace().map(ToOwned::to_owned).collect(),
             short_hash: short_hash.to_string(),
             subject: subject.to_string(),
             graph: std::mem::take(&mut pending_graph),
@@ -973,13 +977,16 @@ index 1111111..2222222 100644
 
     #[test]
     fn parses_git_graph_lines_into_commit_rows() {
-        let output = "* \u{1}head\u{0}head\u{0}head commit\n| * \u{1}side\u{0}side\u{0}side commit\n|/  \n* \u{1}base\u{0}base\u{0}base commit\n";
+        let output = "* \u{1}head\u{0}base\u{0}head\u{0}head commit\n| * \u{1}side\u{0}head\u{0}side\u{0}side commit\n|/  \n* \u{1}base\u{0}\u{0}base\u{0}base commit\n";
         let commits = parse_commit_history(output);
 
         assert_eq!(commits.len(), 3);
         assert_eq!(commits[0].graph, vec!["● "]);
+        assert_eq!(commits[0].parents, vec!["base"]);
         assert_eq!(commits[1].graph, vec!["│ ● "]);
+        assert_eq!(commits[1].parents, vec!["head"]);
         assert_eq!(commits[2].graph, vec!["│╱  ", "● "]);
+        assert!(commits[2].parents.is_empty());
     }
 
     #[test]

@@ -34,9 +34,13 @@ fn display_rows_for(
             });
         }
         if let Some(names) = branch_tips.get(&commit.hash) {
+            let connected = commits[..index]
+                .iter()
+                .any(|newer| newer.parents.iter().any(|parent| parent == &commit.hash));
             rows.push(HistoryRow::BranchLabel {
                 graph: commit.graph.last().cloned().unwrap_or_else(|| "●".into()),
                 names: names.clone(),
+                connected,
             });
         }
         rows.push(HistoryRow::Commit { index });
@@ -93,6 +97,7 @@ mod tests {
     fn inserts_branch_labels_without_making_them_selectable() {
         let commits = vec![Commit {
             hash: "tip".into(),
+            parents: vec![],
             short_hash: "tip".into(),
             subject: "tip".into(),
             graph: vec!["│╲  ".into(), "● ".into()],
@@ -109,9 +114,45 @@ mod tests {
                 HistoryRow::BranchLabel {
                     graph: "● ".into(),
                     names: vec!["feature".into()],
+                    connected: false,
                 },
                 HistoryRow::Commit { index: 0 },
             ]
+        );
+    }
+
+    #[test]
+    fn connects_branch_labels_when_a_newer_commit_has_the_tip_as_parent() {
+        let commits = vec![
+            Commit {
+                hash: "child".into(),
+                parents: vec!["tip".into()],
+                short_hash: "child".into(),
+                subject: "child".into(),
+                graph: vec!["● ".into()],
+            },
+            Commit {
+                hash: "tip".into(),
+                parents: vec!["base".into()],
+                short_hash: "tip".into(),
+                subject: "tip".into(),
+                graph: vec!["│  ".into(), "● ".into()],
+            },
+        ];
+        let branch_tips = HashMap::from([(String::from("tip"), vec![String::from("feature")])]);
+
+        assert!(
+            display_rows_for(&commits, &branch_tips, None)
+                .iter()
+                .any(|row| {
+                    matches!(
+                        row,
+                        HistoryRow::BranchLabel {
+                            connected: true,
+                            ..
+                        }
+                    )
+                })
         );
     }
 }

@@ -1692,6 +1692,7 @@ mod tests {
         app.worktree_panel = WorktreePanel::History;
         app.commits = vec![Commit {
             hash: "1234567890abcdef".into(),
+            parents: vec![],
             short_hash: "12345678".into(),
             subject: "commit".into(),
             graph: vec!["●".into()],
@@ -1736,12 +1737,14 @@ mod tests {
         let commits = vec![
             Commit {
                 hash: "new".into(),
+                parents: vec![],
                 short_hash: "new".into(),
                 subject: "new commit".into(),
                 graph: vec!["●".into()],
             },
             Commit {
                 hash: "selected".into(),
+                parents: vec![],
                 short_hash: "selected".into(),
                 subject: "selected commit".into(),
                 graph: vec!["●".into()],
@@ -1769,12 +1772,14 @@ mod tests {
         app.commits = vec![
             Commit {
                 hash: "first".into(),
+                parents: vec![],
                 short_hash: "first".into(),
                 subject: "first".into(),
                 graph: vec!["●".into()],
             },
             Commit {
                 hash: "second".into(),
+                parents: vec![],
                 short_hash: "second".into(),
                 subject: "second".into(),
                 graph: vec!["│ ●".into(), "│╱".into()],

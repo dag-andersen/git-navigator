@@ -17,7 +17,13 @@ const SELECTED: Style = Style::new()
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let items = items(app);
-    let title = format!("History ({})", app.commits.len() + 1);
+    let branch = app
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.is_current)
+        .map(|worktree| worktree.branch.as_str())
+        .unwrap_or("detached HEAD");
+    let title = format!("History ({}) - {branch}", app.commits.len() + 1);
     let list = List::new(items)
         .block(super::pane_block(&title, app.focus == Focus::Worktrees))
         .highlight_style(SELECTED)
@@ -44,8 +50,14 @@ fn items(app: &App) -> Vec<ListItem<'static>> {
             crate::model::HistoryRow::Graph(graph) => {
                 ListItem::new(graph_line(&graph, false, None))
             }
-            crate::model::HistoryRow::BranchLabel { graph, names } => {
-                let mut label = graph_line(&graph, false, Some('#'));
+            crate::model::HistoryRow::BranchLabel {
+                graph,
+                names,
+                connected,
+            } => {
+                let marker = if connected { '│' } else { ' ' };
+                let mut label =
+                    graph_line_with_marker(&graph, false, Some(marker), Some(Color::DarkGray));
                 label.spans.push(Span::styled(
                     names.join(", "),
                     Style::new().fg(Color::DarkGray),
