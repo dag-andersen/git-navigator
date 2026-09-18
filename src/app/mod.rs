@@ -947,7 +947,9 @@ impl App {
             offset += 1;
         }
         self.changes.diff_state.select(row);
-        *self.changes.diff_state.offset_mut() = row.unwrap_or(0);
+        // Let the Table widget choose the viewport around the followed row. Setting
+        // the offset to the selected row would hide all preceding diff content.
+        *self.changes.diff_state.offset_mut() = 0;
     }
 
     fn request_worktree_removal(&mut self) {
@@ -1488,6 +1490,7 @@ mod tests {
         });
         app.changes.install_files(vec![first, second]);
         app.select_file_path(Some(PathBuf::from("first.txt")));
+        *app.changes.diff_state.offset_mut() = 99;
         app.view.follow_changes = true;
 
         app.follow_changed_paths(&[PathBuf::from("/repo/src/second.txt")]);
@@ -1497,6 +1500,7 @@ mod tests {
             Some(Path::new("src/second.txt"))
         );
         assert_eq!(app.changes.diff_state.selected(), Some(1));
+        assert_eq!(app.changes.diff_state.offset(), 0);
     }
 
     #[test]
