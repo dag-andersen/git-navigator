@@ -1182,6 +1182,7 @@ mod tests {
         assert_eq!(scrollbar_position(2, 5, 3), 4);
 
         app.history.worktree_panel = crate::app::WorktreePanel::History;
+        app.repository.worktree_state.select(Some(0));
         app.history.commits = vec![crate::model::Commit {
             hash: "base-hash".into(),
             parents: vec![],

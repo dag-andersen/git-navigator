@@ -23,10 +23,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
     let selected = visual_index(app, app.history.selection.as_ref());
     let items = items(app, rows);
     let branch = app
-        .repository
-        .worktrees
-        .iter()
-        .find(|worktree| worktree.is_current)
+        .selected_worktree()
         .map(|worktree| worktree.branch.as_str())
         .unwrap_or("detached HEAD");
     let title = format!("History ({}) - {branch}", app.history.commits.len() + 1);
