@@ -117,6 +117,21 @@ pub struct ChangeState {
     pub selected_file_path: Option<PathBuf>,
 }
 
+impl ChangeState {
+    fn install_files(&mut self, files: Vec<ChangedFile>) {
+        self.files = files;
+        self.file_tree = build_file_tree(&self.files);
+        self.file_lookup = FileLookup::build(&self.files, &self.file_tree);
+    }
+
+    fn clear_files(&mut self) {
+        self.install_files(Vec::new());
+        self.selected_file_path = None;
+        self.file_state.select(None);
+        self.diff_state.select(None);
+    }
+}
+
 #[derive(Debug)]
 pub struct HistoryState {
     pub list_state: ListState,
@@ -208,7 +223,26 @@ pub struct App {
     pub view: ViewState,
 }
 
+#[derive(Clone, Debug)]
+struct RepositorySnapshot {
+    worktree_path: Option<PathBuf>,
+    file_path: Option<PathBuf>,
+    diff_position: Option<DiffPosition>,
+    history_selection: Option<HistorySelection>,
+}
+
 impl App {
+    fn repository_snapshot(&self) -> RepositorySnapshot {
+        RepositorySnapshot {
+            worktree_path: self
+                .selected_worktree()
+                .map(|worktree| worktree.path.clone()),
+            file_path: self.selected_file().map(|file| file.path.clone()),
+            diff_position: self.diff_position(),
+            history_selection: self.history.selection.clone(),
+        }
+    }
+
     pub fn load(directory: PathBuf, base: String) -> Result<Self> {
         let worktrees = git::discover_worktrees(&directory)?;
         let selected_worktree = worktrees
@@ -252,10 +286,14 @@ impl App {
         let file_tree = build_file_tree(&files);
         let mut file_state = ListState::default();
         file_state.select(first_file_row(&file_tree));
-        let mut diff_state = TableState::default();
-        diff_state.select(first_diff_row(&files, &file_tree, file_state.selected()));
         let file_lookup = FileLookup::build(&files, &file_tree);
-
+        let mut diff_state = TableState::default();
+        diff_state.select(first_diff_row(
+            &files,
+            &file_tree,
+            &file_lookup,
+            file_state.selected(),
+        ));
         let focus = Focus::Files;
         let history_preferred_file = if has_linked_worktrees {
             None
@@ -385,6 +423,7 @@ impl App {
         self.changes.diff_state.select(first_diff_row(
             &self.changes.files,
             &self.changes.file_tree,
+            &self.changes.file_lookup,
             Some(row),
         ));
     }
@@ -511,9 +550,14 @@ impl App {
     }
 
     pub fn visible_file_rows(&self) -> Vec<usize> {
+        self.visible_file_rows_with_lookup()
+    }
+
+    fn visible_file_rows_with_lookup(&self) -> Vec<usize> {
         filtered_file_tree(
             &self.changes.file_tree,
             &self.changes.files,
+            &self.changes.file_lookup,
             self.search_query(Focus::Files),
         )
     }
@@ -524,7 +568,12 @@ impl App {
 
     pub fn selected_file(&self) -> Option<&ChangedFile> {
         let path = self.changes.selected_file_path.as_deref()?;
-        self.changes.files.iter().find(|file| file.path == path)
+        self.changes
+            .file_lookup
+            .file_indices
+            .get(path)
+            .and_then(|index| self.changes.files.get(*index))
+            .or_else(|| self.changes.files.iter().find(|file| file.path == path))
     }
 
     pub fn diff_row_count(&self) -> usize {
@@ -540,7 +589,12 @@ impl App {
 
     pub fn selected_file_index(&self) -> Option<usize> {
         let path = self.changes.selected_file_path.as_deref()?;
-        self.changes.files.iter().position(|file| file.path == path)
+        self.changes
+            .file_lookup
+            .file_indices
+            .get(path)
+            .copied()
+            .or_else(|| self.changes.files.iter().position(|file| file.path == path))
     }
 
     fn select_file_path(&mut self, path: Option<PathBuf>) {
@@ -654,6 +708,7 @@ impl App {
         self.changes.diff_state.select(first_diff_row(
             &self.changes.files,
             &self.changes.file_tree,
+            &self.changes.file_lookup,
             self.changes.file_state.selected(),
         ));
     }
@@ -718,12 +773,7 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
-        let selected_worktree = self
-            .selected_worktree()
-            .map(|worktree| worktree.path.clone());
-        let selected_file = self.selected_file().map(|file| file.path.clone());
-        let diff_position = self.diff_position();
-        let history_selection = self.history.selection.clone();
+        let snapshot = self.repository_snapshot();
 
         match git::discover_worktrees(&self.repository.directory) {
             Ok(worktrees) => {
@@ -735,7 +785,8 @@ impl App {
                     self.view.focus = Focus::Files;
                     self.view.search = None;
                 }
-                let selected = selected_worktree
+                let selected = snapshot
+                    .worktree_path
                     .as_deref()
                     .and_then(|path| worktree_index(&self.repository.worktrees, path))
                     .or_else(|| {
@@ -773,7 +824,7 @@ impl App {
                         self.history.remote_base_hash = remote_base_hash;
                     }
                     self.history.selection = history_selection_after_refresh(
-                        history_selection.as_ref(),
+                        snapshot.history_selection.as_ref(),
                         &self.history.commits,
                     );
                     if let Err(error) = self.update_history_range() {
@@ -782,14 +833,14 @@ impl App {
                     }
                     if self.history.selection == Some(HistorySelection::Wip) {
                         self.reload_files_with_position(
-                            selected_file.as_deref(),
-                            diff_position.as_ref(),
+                            snapshot.file_path.as_deref(),
+                            snapshot.diff_position.as_ref(),
                         );
                     }
                 } else {
                     self.reload_files_with_position(
-                        selected_file.as_deref(),
-                        diff_position.as_ref(),
+                        snapshot.file_path.as_deref(),
+                        snapshot.diff_position.as_ref(),
                     );
                 }
             }
@@ -875,10 +926,7 @@ impl App {
         diff_position: Option<&DiffPosition>,
     ) {
         let Some(worktree) = self.selected_worktree() else {
-            self.changes.files.clear();
-            self.changes.file_tree.clear();
-            self.select_file_path(None);
-            self.changes.diff_state.select(None);
+            self.changes.clear_files();
             return;
         };
         let path = worktree.path.clone();
@@ -889,10 +937,7 @@ impl App {
                 .filter(|reason| !reason.is_empty())
                 .unwrap_or("working directory does not exist")
                 .to_string();
-            self.changes.files.clear();
-            self.changes.file_tree.clear();
-            self.select_file_path(None);
-            self.changes.diff_state.select(None);
+            self.changes.clear_files();
             self.set_error(format!(
                 "Unavailable worktree: {reason}. Press d in the Worktrees pane to clean it up"
             ));
@@ -906,8 +951,7 @@ impl App {
             &self.repository.base,
         ) {
             Ok(files) => {
-                self.changes.files = files;
-                self.changes.file_tree = build_file_tree(&self.changes.files);
+                self.changes.install_files(files);
                 let selected_path = preferred_file
                     .filter(|path| self.changes.files.iter().any(|file| file.path == *path))
                     .map(Path::to_path_buf)
@@ -921,10 +965,7 @@ impl App {
                 self.view.status = None;
             }
             Err(error) => {
-                self.changes.files.clear();
-                self.changes.file_tree.clear();
-                self.select_file_path(None);
-                self.changes.diff_state.select(None);
+                self.changes.clear_files();
                 self.set_error(format!("Could not load changes: {error:#}"));
             }
         }
@@ -961,6 +1002,7 @@ impl App {
                     first_diff_row(
                         &self.changes.files,
                         &self.changes.file_tree,
+                        &self.changes.file_lookup,
                         self.changes.file_state.selected(),
                     )
                 });
@@ -971,6 +1013,7 @@ impl App {
             self.changes.diff_state.select(first_diff_row(
                 &self.changes.files,
                 &self.changes.file_tree,
+                &self.changes.file_lookup,
                 self.changes.file_state.selected(),
             ));
             *self.changes.diff_state.offset_mut() = 0;
@@ -1109,8 +1152,7 @@ impl App {
             self.changes.mode,
             &self.repository.base,
         )?;
-        self.changes.files = files;
-        self.changes.file_tree = build_file_tree(&self.changes.files);
+        self.changes.install_files(files);
         let selected_path = self
             .history
             .preferred_file
@@ -1126,6 +1168,7 @@ impl App {
         self.changes.diff_state.select(first_diff_row(
             &self.changes.files,
             &self.changes.file_tree,
+            &self.changes.file_lookup,
             self.changes.file_state.selected(),
         ));
         Ok(())
@@ -1442,7 +1485,8 @@ mod tests {
             ChangedFile::empty(PathBuf::from("tests/test.rs"), FileStatus::Modified),
         ];
         let tree = build_file_tree(&files);
-        let visible = filtered_file_tree(&tree, &files, "parser");
+        let lookup = FileLookup::build(&files, &tree);
+        let visible = filtered_file_tree(&tree, &files, &lookup, "parser");
         let labels: Vec<String> = visible
             .iter()
             .map(|index| file_tree_label(&tree, *index, &visible))
@@ -1502,6 +1546,49 @@ mod tests {
             moved_visible_file_selection(Some(1), &visible, &tree, 1),
             Some(2)
         );
+    }
+
+    #[test]
+    fn installing_and_clearing_files_rebuilds_lookup_and_resets_selection() {
+        let mut app = test_app();
+        let old_path = PathBuf::from("old.rs");
+        let new_path = PathBuf::from("src/new.rs");
+
+        app.changes.install_files(vec![ChangedFile::empty(
+            old_path.clone(),
+            FileStatus::Modified,
+        )]);
+        assert_eq!(
+            app.changes.file_lookup.file_indices.get(&old_path),
+            Some(&0)
+        );
+
+        app.changes.install_files(vec![ChangedFile::empty(
+            new_path.clone(),
+            FileStatus::Modified,
+        )]);
+        assert!(!app.changes.file_lookup.file_indices.contains_key(&old_path));
+        assert_eq!(
+            app.changes.file_lookup.file_indices.get(&new_path),
+            Some(&0)
+        );
+        assert_eq!(
+            app.changes.file_lookup.tree_indices.get(&new_path),
+            Some(&1)
+        );
+
+        app.changes.selected_file_path = Some(new_path);
+        app.changes.file_state.select(Some(1));
+        app.changes.diff_state.select(Some(2));
+        app.changes.clear_files();
+
+        assert!(app.changes.files.is_empty());
+        assert!(app.changes.file_tree.is_empty());
+        assert!(app.changes.file_lookup.file_indices.is_empty());
+        assert!(app.changes.file_lookup.tree_indices.is_empty());
+        assert_eq!(app.changes.selected_file_path, None);
+        assert_eq!(app.changes.file_state.selected(), None);
+        assert_eq!(app.changes.diff_state.selected(), None);
     }
 
     #[test]

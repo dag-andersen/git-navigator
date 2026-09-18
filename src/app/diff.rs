@@ -2,25 +2,32 @@ use ratatui::layout::{Position, Rect};
 
 use crate::{
     diff_geometry::{content_width, row_height},
-    model::{ChangedFile, DiffLayout},
+    model::{ChangedFile, DiffLayout, HunkId},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PositionState {
-    pub(crate) hunk_header: String,
+    pub(crate) hunk_id: HunkId,
     pub(crate) row_in_hunk: usize,
     pub(crate) scroll_offset: usize,
-    pub(crate) collapsed_hunks: Vec<String>,
+    pub(crate) collapsed_hunks: Vec<HunkId>,
 }
 
 pub(crate) fn first_row(
     files: &[ChangedFile],
     tree: &[crate::model::FileTreeRow],
+    lookup: &crate::app::files::FileLookup,
     selected: Option<usize>,
 ) -> Option<usize> {
     selected
         .and_then(|row| tree.get(row))
-        .and_then(|row| files.iter().find(|file| file.path == row.path))
+        .and_then(|row| lookup.file_indices.get(&row.path))
+        .and_then(|index| files.get(*index))
+        .or_else(|| {
+            selected
+                .and_then(|row| tree.get(row))
+                .and_then(|row| files.iter().find(|file| file.path == row.path))
+        })
         .filter(|file| !file.hunks.is_empty())
         .map(|_| 0)
 }
@@ -69,7 +76,7 @@ pub(crate) fn row_position(file: &ChangedFile, row: usize) -> Option<(usize, usi
 pub(crate) fn row_for_position(file: &ChangedFile, position: &PositionState) -> Option<usize> {
     let mut start = 0;
     for hunk in &file.hunks {
-        if hunk.header == position.hunk_header {
+        if hunk.id == position.hunk_id {
             let max_row = if hunk.collapsed { 0 } else { hunk.rows.len() };
             return Some(start + position.row_in_hunk.min(max_row));
         }

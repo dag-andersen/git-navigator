@@ -707,6 +707,34 @@ index 1111111..0000000
     }
 
     #[test]
+    fn assigns_distinct_ids_to_duplicate_hunks_and_preserves_change_kind() {
+        let patch = r#"diff --git a/file.txt b/file.txt
+index 1111111..2222222 100644
+--- a/file.txt
++++ b/file.txt
+@@ -1 +1 @@
+-old
++new
+@@ -1 +1 @@
+-old
++new
+"#;
+
+        let staged = parse_diff(patch, HunkKind::Staged);
+        assert_eq!(staged[0].hunks.len(), 2);
+        assert_ne!(staged[0].hunks[0].id, staged[0].hunks[1].id);
+        assert_eq!(staged[0].hunks[0].kind, HunkKind::Staged);
+
+        let mut merged = staged;
+        merge_files(&mut merged, parse_diff(patch, HunkKind::Unstaged));
+        assert_eq!(merged[0].hunks.len(), 4);
+        assert_eq!(merged[0].hunks[2].kind, HunkKind::Unstaged);
+        assert_eq!(merged[0].hunks[3].kind, HunkKind::Unstaged);
+        assert_ne!(merged[0].hunks[0].id, merged[0].hunks[2].id);
+        assert_ne!(merged[0].hunks[1].id, merged[0].hunks[3].id);
+    }
+
+    #[test]
     fn branch_mode_includes_committed_and_working_tree_changes() {
         let repository = TestRepository::new();
         run_git(repository.path(), &["switch", "-c", "feature"]);

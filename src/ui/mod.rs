@@ -2,6 +2,7 @@ mod diff;
 mod files;
 mod history;
 mod layout;
+mod projection;
 
 use std::path::Path;
 
@@ -52,7 +53,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
     render_header(frame, app, header);
-    let show_worktrees = app.has_linked_worktrees() || app.history_active();
+    let panels = projection::panels(app);
+    let show_worktrees = panels.show_worktrees;
     let [worktrees, files, diff] = panel_areas_for(
         body,
         app.view.focus,
@@ -65,15 +67,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame,
             worktrees,
             "W",
-            app.visible_worktree_indices().len(),
-            app.repository
-                .worktree_state
-                .selected()
-                .and_then(|selected| {
-                    app.visible_worktree_indices()
-                        .iter()
-                        .position(|index| *index == selected)
-                }),
+            panels.worktree_rows.len(),
+            panels.selected_worktree,
         );
     } else if show_worktrees {
         if app.history_active() {
@@ -87,15 +82,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             frame,
             files,
             "F",
-            app.visible_file_rows().len(),
-            app.changes.file_state.selected().and_then(|selected| {
-                app.visible_file_rows()
-                    .iter()
-                    .position(|index| *index == selected)
-            }),
+            panels.file_rows.len(),
+            panels.selected_file,
         );
     } else {
-        files::render(frame, app, files);
+        files::render(frame, app, files, &panels.file_rows, panels.selected_file);
     }
     if app.view.expanded && app.view.focus != Focus::Diff {
         render_compact_panel(
@@ -103,7 +94,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             diff,
             "D",
             app.selected_file().map_or(0, |file| file.hunks.len()),
-            app.selected_hunk_index(),
+            panels.selected_hunk,
         );
     } else {
         render_diff(frame, app, diff);

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,
     path::{Component, Path, PathBuf},
 };
@@ -10,6 +10,30 @@ use super::moved_selection;
 
 pub(crate) fn first_file_row(tree: &[FileTreeRow]) -> Option<usize> {
     tree.iter().position(|row| !row.is_directory())
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FileLookup {
+    pub(crate) file_indices: HashMap<PathBuf, usize>,
+    pub(crate) tree_indices: HashMap<PathBuf, usize>,
+}
+
+impl FileLookup {
+    pub(crate) fn build(files: &[ChangedFile], tree: &[FileTreeRow]) -> Self {
+        Self {
+            file_indices: files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| (file.path.clone(), index))
+                .collect(),
+            tree_indices: tree
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| !row.is_directory())
+                .map(|(index, row)| (row.path.clone(), index))
+                .collect(),
+        }
+    }
 }
 
 pub(crate) fn first_file_row_in(tree: &[FileTreeRow], visible: &[usize]) -> Option<usize> {
@@ -125,20 +149,22 @@ fn flatten(
 pub(crate) fn filtered_tree(
     tree: &[FileTreeRow],
     files: &[ChangedFile],
+    lookup: &FileLookup,
     query: &str,
 ) -> Vec<usize> {
     if query.is_empty() {
         return (0..tree.len()).collect();
     }
 
-    let matching_files: Vec<usize> = tree
+    let matching_files: HashSet<usize> = tree
         .iter()
         .enumerate()
         .filter(|(_, row)| {
             row.kind == FileTreeRowKind::File && {
-                files
-                    .iter()
-                    .find(|file| file.path == row.path)
+                lookup
+                    .file_indices
+                    .get(&row.path)
+                    .and_then(|index| files.get(*index))
                     .is_some_and(|file| super::fuzzy_match(query, &file.path.display().to_string()))
             }
         })
@@ -196,4 +222,57 @@ pub(crate) fn tree_label(tree: &[FileTreeRow], row_index: usize, visible_rows: &
         |name| name.to_string_lossy().into_owned(),
     ));
     label
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::FileStatus;
+
+    #[test]
+    fn lookup_maps_file_paths_and_only_file_tree_rows() {
+        let files = vec![
+            ChangedFile::empty(PathBuf::from("tests/test.rs"), FileStatus::Modified),
+            ChangedFile::empty(PathBuf::from("src/main.rs"), FileStatus::Modified),
+        ];
+        let tree = build_tree(&files);
+        let lookup = FileLookup::build(&files, &tree);
+
+        assert_eq!(
+            lookup.file_indices.get(Path::new("tests/test.rs")),
+            Some(&0)
+        );
+        assert_eq!(lookup.file_indices.get(Path::new("src/main.rs")), Some(&1));
+        assert_eq!(lookup.tree_indices.get(Path::new("src/main.rs")), Some(&1));
+        assert_eq!(
+            lookup.tree_indices.get(Path::new("tests/test.rs")),
+            Some(&3)
+        );
+        assert!(!lookup.tree_indices.contains_key(Path::new("src")));
+        assert!(!lookup.tree_indices.contains_key(Path::new("tests")));
+    }
+
+    #[test]
+    fn filtered_tree_uses_lookup_for_reordered_files_and_keeps_ancestors() {
+        let files = vec![
+            ChangedFile::empty(PathBuf::from("tests/test.rs"), FileStatus::Modified),
+            ChangedFile::empty(PathBuf::from("src/main.rs"), FileStatus::Modified),
+            ChangedFile::empty(PathBuf::from("src/git/parser.rs"), FileStatus::Modified),
+        ];
+        let tree = build_tree(&files);
+        let lookup = FileLookup::build(&files, &tree);
+
+        let visible = filtered_tree(&tree, &files, &lookup, "parser");
+        assert_eq!(
+            visible
+                .iter()
+                .map(|index| tree[*index].path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("src"),
+                PathBuf::from("src/git"),
+                PathBuf::from("src/git/parser.rs"),
+            ]
+        );
+    }
 }

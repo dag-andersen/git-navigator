@@ -90,22 +90,6 @@ pub enum HistorySelection {
     Commit { hash: String },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HistoryRow {
-    Wip {
-        graph: String,
-    },
-    Graph(String),
-    BranchLabel {
-        graph: String,
-        names: Vec<String>,
-        connected: bool,
-    },
-    Commit {
-        hash: String,
-    },
-}
-
 impl Worktree {
     pub fn is_missing(&self) -> bool {
         !self.available || self.prunable_reason.is_some()
@@ -189,10 +173,20 @@ impl HunkKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiffHunk {
+    pub id: HunkId,
     pub header: String,
     pub kind: HunkKind,
     pub rows: Vec<DiffRow>,
     pub collapsed: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct HunkId(pub String);
+
+impl HunkId {
+    pub fn synthetic(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -304,6 +304,7 @@ impl App {
                 self.changes.diff_state.select(first_diff_row(
                     &self.changes.files,
                     &self.changes.file_tree,
+                    &self.changes.file_lookup,
                     selected,
                 ));
             }

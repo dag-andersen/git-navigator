@@ -11,13 +11,13 @@ use crate::{
     model::{ChangeMode, ChangedFile, FileStatus},
 };
 
-pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    let visible = app.visible_file_rows();
-    let selected = app
-        .changes
-        .file_state
-        .selected()
-        .and_then(|selected| visible.iter().position(|index| *index == selected));
+pub(crate) fn render(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    visible: &[usize],
+    selected: Option<usize>,
+) {
     let items: Vec<ListItem> = visible
         .iter()
         .map(|index| {
@@ -36,14 +36,14 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 })
             else {
                 return ListItem::new(Line::styled(
-                    app.file_tree_label(*index, &visible),
+                    app.file_tree_label(*index, visible),
                     Style::new().fg(Color::Cyan).bold(),
                 ));
             };
 
             let style = file_style(file, app.changes.mode);
             ListItem::new(Line::from(vec![
-                Span::styled(app.file_tree_label(*index, &visible), style),
+                Span::styled(app.file_tree_label(*index, visible), style),
                 Span::styled(
                     format!(
                         "  {} +{} -{}",
