@@ -1,5 +1,5 @@
 mod diff;
-mod files;
+pub(crate) mod files;
 mod history;
 mod layout;
 mod projection;
@@ -527,9 +527,9 @@ fn worktree_title(app: &App, visible_count: usize) -> String {
 
 pub(crate) fn file_title(app: &App, visible_count: usize) -> String {
     let count = if app.view.file_filter.is_empty() {
-        app.changes.files.len().to_string()
+        app.changes.files().len().to_string()
     } else {
-        format!("{visible_count}/{}", app.changes.files.len())
+        format!("{visible_count}/{}", app.changes.files().len())
     };
     panel_title(
         &format!("Files ({count})"),
@@ -763,7 +763,7 @@ mod tests {
     use super::*;
     use crate::model::{
         ChangedFile, DiffHunk, DiffLayout, DiffRow, DiffRowKind, DiffView, FileStatus,
-        FileTreeRowKind, HistorySelection, HunkKind, Worktree,
+        HistorySelection, HunkKind, Worktree,
     };
 
     #[test]
@@ -1021,6 +1021,11 @@ mod tests {
         file_state.select(Some(0));
         let mut diff_state = ratatui::widgets::TableState::default();
         diff_state.select(Some(0));
+        let mut changes = crate::app::ChangeState::new(ChangeMode::Uncommitted, DiffView::Hunks);
+        changes.install_files(vec![file]);
+        changes.file_state = file_state;
+        changes.diff_state = diff_state;
+        changes.select_file_path(Some(PathBuf::from("src/main.rs")));
         let mut app = App {
             repository: crate::app::RepositoryState {
                 directory: PathBuf::from("/repo"),
@@ -1051,20 +1056,7 @@ mod tests {
                 ],
                 worktree_state,
             },
-            changes: crate::app::ChangeState {
-                mode: ChangeMode::Uncommitted,
-                diff_view: DiffView::Hunks,
-                files: vec![file],
-                file_tree: vec![crate::model::FileTreeRow {
-                    label: "└── src/main.rs".into(),
-                    path: std::path::PathBuf::from("src/main.rs"),
-                    kind: FileTreeRowKind::File,
-                }],
-                file_lookup: crate::app::files::FileLookup::default(),
-                file_state,
-                diff_state,
-                selected_file_path: Some(PathBuf::from("src/main.rs")),
-            },
+            changes,
             history: crate::app::HistoryState {
                 list_state: ListState::default(),
                 worktree_panel: crate::app::WorktreePanel::Worktrees,
@@ -1217,16 +1209,7 @@ mod tests {
                 worktrees: vec![],
                 worktree_state: ListState::default(),
             },
-            changes: crate::app::ChangeState {
-                mode: ChangeMode::Branch,
-                diff_view: DiffView::Hunks,
-                files: vec![],
-                file_tree: vec![],
-                file_lookup: crate::app::files::FileLookup::default(),
-                file_state: ListState::default(),
-                diff_state: ratatui::widgets::TableState::default(),
-                selected_file_path: None,
-            },
+            changes: crate::app::ChangeState::new(ChangeMode::Branch, DiffView::Hunks),
             history: crate::app::HistoryState {
                 list_state: ListState::default(),
                 worktree_panel: crate::app::WorktreePanel::History,

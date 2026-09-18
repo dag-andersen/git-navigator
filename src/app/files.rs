@@ -13,13 +13,13 @@ pub(crate) fn first_file_row(tree: &[FileTreeRow]) -> Option<usize> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FileLookup {
-    pub(crate) file_indices: HashMap<PathBuf, usize>,
-    pub(crate) tree_indices: HashMap<PathBuf, usize>,
+pub(super) struct FileLookup {
+    file_indices: HashMap<PathBuf, usize>,
+    tree_indices: HashMap<PathBuf, usize>,
 }
 
 impl FileLookup {
-    pub(crate) fn build(files: &[ChangedFile], tree: &[FileTreeRow]) -> Self {
+    pub(super) fn build(files: &[ChangedFile], tree: &[FileTreeRow]) -> Self {
         Self {
             file_indices: files
                 .iter()
@@ -33,6 +33,14 @@ impl FileLookup {
                 .map(|(index, row)| (row.path.clone(), index))
                 .collect(),
         }
+    }
+
+    pub(super) fn file_index(&self, path: &Path) -> Option<usize> {
+        self.file_indices.get(path).copied()
+    }
+
+    pub(super) fn tree_index(&self, path: &Path) -> Option<usize> {
+        self.tree_indices.get(path).copied()
     }
 }
 
@@ -90,7 +98,7 @@ pub(crate) fn build_tree(files: &[ChangedFile]) -> Vec<FileTreeRow> {
     }
 
     let mut rows = Vec::new();
-    flatten(&root, Path::new(""), "", &mut rows);
+    flatten(&root, Path::new(""), &mut rows);
     rows
 }
 
@@ -112,22 +120,10 @@ fn insert(directory: &mut Directory, components: &[OsString]) {
     }
 }
 
-fn flatten(
-    directory: &Directory,
-    path_prefix: &Path,
-    label_prefix: &str,
-    rows: &mut Vec<FileTreeRow>,
-) {
-    let child_count = directory.children.len();
-    for (position, (name, node)) in directory.children.iter().enumerate() {
-        let is_last = position + 1 == child_count;
+fn flatten(directory: &Directory, path_prefix: &Path, rows: &mut Vec<FileTreeRow>) {
+    for (name, node) in &directory.children {
         let path = path_prefix.join(name);
         rows.push(FileTreeRow {
-            label: format!(
-                "{label_prefix}{}{}",
-                if is_last { "└── " } else { "├── " },
-                name.to_string_lossy(),
-            ),
             path: path.clone(),
             kind: match node {
                 Node::Directory(_) => FileTreeRowKind::Directory,
@@ -136,17 +132,12 @@ fn flatten(
         });
 
         if let Node::Directory(child) = node {
-            flatten(
-                child,
-                &path,
-                &format!("{label_prefix}{}", if is_last { "    " } else { "│   " }),
-                rows,
-            );
+            flatten(child, &path, rows);
         }
     }
 }
 
-pub(crate) fn filtered_tree(
+pub(super) fn filtered_tree(
     tree: &[FileTreeRow],
     files: &[ChangedFile],
     lookup: &FileLookup,
@@ -182,46 +173,6 @@ pub(crate) fn filtered_tree(
         })
         .map(|(row_index, _)| row_index)
         .collect()
-}
-
-pub(crate) fn tree_label(tree: &[FileTreeRow], row_index: usize, visible_rows: &[usize]) -> String {
-    let path = &tree[row_index].path;
-    let depth = path.components().count();
-    let mut label = String::new();
-    for ancestor_depth in 1..depth {
-        let ancestor =
-            path.components()
-                .take(ancestor_depth)
-                .fold(PathBuf::new(), |mut path, component| {
-                    path.push(component.as_os_str());
-                    path
-                });
-        let has_later_sibling = visible_rows.iter().any(|index| {
-            tree[*index].path.parent() == ancestor.parent()
-                && tree[*index].path != ancestor
-                && *index
-                    > tree
-                        .iter()
-                        .position(|row| row.path == ancestor)
-                        .unwrap_or(0)
-        });
-        label.push_str(if has_later_sibling { "│   " } else { "    " });
-    }
-    let has_later_sibling = visible_rows.iter().any(|index| {
-        *index > row_index
-            && tree[*index].path.parent() == path.parent()
-            && tree[*index].path != *path
-    });
-    label.push_str(if has_later_sibling {
-        "├── "
-    } else {
-        "└── "
-    });
-    label.push_str(&path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    ));
-    label
 }
 
 #[cfg(test)]

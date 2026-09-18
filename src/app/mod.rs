@@ -33,9 +33,8 @@ use self::{
         row_for_position as diff_row_for_position, row_position as diff_row_position,
     },
     files::{
-        FileLookup, build_tree as build_file_tree, filtered_tree as filtered_file_tree,
-        first_file_row, first_file_row_in, moved_visible_file_selection,
-        tree_label as file_tree_label,
+        build_tree as build_file_tree, filtered_tree as filtered_file_tree, first_file_row,
+        first_file_row_in, moved_visible_file_selection,
     },
     history::{
         list_index as history_list_index,
@@ -109,26 +108,103 @@ pub struct RepositoryState {
 pub struct ChangeState {
     pub mode: ChangeMode,
     pub diff_view: DiffView,
-    pub files: Vec<ChangedFile>,
-    pub file_tree: Vec<FileTreeRow>,
-    pub(crate) file_lookup: FileLookup,
+    files: Vec<ChangedFile>,
+    file_tree: Vec<FileTreeRow>,
+    file_lookup: files::FileLookup,
     pub file_state: ListState,
     pub diff_state: TableState,
-    pub selected_file_path: Option<PathBuf>,
+    selected_file_path: Option<PathBuf>,
 }
 
 impl ChangeState {
-    fn install_files(&mut self, files: Vec<ChangedFile>) {
-        self.files = files;
-        self.file_tree = build_file_tree(&self.files);
-        self.file_lookup = FileLookup::build(&self.files, &self.file_tree);
+    pub(crate) fn new(mode: ChangeMode, diff_view: DiffView) -> Self {
+        Self {
+            mode,
+            diff_view,
+            files: Vec::new(),
+            file_tree: Vec::new(),
+            file_lookup: files::FileLookup::default(),
+            file_state: ListState::default(),
+            diff_state: TableState::default(),
+            selected_file_path: None,
+        }
     }
 
-    fn clear_files(&mut self) {
+    pub(crate) fn install_files(&mut self, files: Vec<ChangedFile>) {
+        self.files = files;
+        self.file_tree = build_file_tree(&self.files);
+        self.file_lookup = files::FileLookup::build(&self.files, &self.file_tree);
+    }
+
+    pub(crate) fn clear_files(&mut self) {
         self.install_files(Vec::new());
         self.selected_file_path = None;
         self.file_state.select(None);
         self.diff_state.select(None);
+    }
+
+    pub(crate) fn files(&self) -> &[ChangedFile] {
+        &self.files
+    }
+
+    fn file_mut(&mut self, index: usize) -> Option<&mut ChangedFile> {
+        self.files.get_mut(index)
+    }
+
+    pub(crate) fn file_tree(&self) -> &[FileTreeRow] {
+        &self.file_tree
+    }
+
+    pub(crate) fn file_tree_row(&self, row: usize) -> Option<&FileTreeRow> {
+        self.file_tree.get(row)
+    }
+
+    pub(crate) fn file_for_tree_row(&self, row: usize) -> Option<&ChangedFile> {
+        self.file_tree_row(row)
+            .and_then(|row| self.file_lookup.file_index(&row.path))
+            .and_then(|index| self.files.get(index))
+    }
+
+    pub(crate) fn file_index(&self, path: &Path) -> Option<usize> {
+        self.file_lookup.file_index(path)
+    }
+
+    pub(crate) fn tree_index(&self, path: &Path) -> Option<usize> {
+        self.file_lookup.tree_index(path)
+    }
+
+    pub(crate) fn first_file_row(&self) -> Option<usize> {
+        first_file_row(&self.file_tree)
+    }
+
+    pub(crate) fn first_file_row_in(&self, visible: &[usize]) -> Option<usize> {
+        first_file_row_in(&self.file_tree, visible)
+    }
+
+    pub(crate) fn visible_file_rows(&self, query: &str) -> Vec<usize> {
+        filtered_file_tree(&self.file_tree, &self.files, &self.file_lookup, query)
+    }
+
+    pub(crate) fn selected_file(&self) -> Option<&ChangedFile> {
+        self.selected_file_path
+            .as_deref()
+            .and_then(|path| self.file_index(path))
+            .and_then(|index| self.files.get(index))
+    }
+
+    pub(crate) fn selected_file_index(&self) -> Option<usize> {
+        self.selected_file_path
+            .as_deref()
+            .and_then(|path| self.file_index(path))
+    }
+
+    pub(crate) fn select_file_path(&mut self, path: Option<PathBuf>) {
+        self.selected_file_path = path;
+        let row = self
+            .selected_file_path
+            .as_deref()
+            .and_then(|path| self.tree_index(path));
+        self.file_state.select(row);
     }
 }
 
@@ -283,32 +359,29 @@ impl App {
         worktree_state.select(Some(selected_worktree));
         let mut history_state = ListState::default();
         history_state.select(Some(0));
-        let file_tree = build_file_tree(&files);
+        let mut changes = ChangeState::new(ChangeMode::Uncommitted, DiffView::Hunks);
+        changes.install_files(files);
         let mut file_state = ListState::default();
-        file_state.select(first_file_row(&file_tree));
-        let file_lookup = FileLookup::build(&files, &file_tree);
+        file_state.select(changes.first_file_row());
         let mut diff_state = TableState::default();
-        diff_state.select(first_diff_row(
-            &files,
-            &file_tree,
-            &file_lookup,
-            file_state.selected(),
-        ));
+        diff_state.select(first_diff_row(&changes, file_state.selected()));
         let focus = Focus::Files;
         let history_preferred_file = if has_linked_worktrees {
             None
         } else {
             file_state
                 .selected()
-                .and_then(|row| file_tree.get(row))
-                .and_then(|row| files.iter().find(|file| file.path == row.path))
+                .and_then(|row| changes.file_for_tree_row(row))
                 .map(|file| file.path.clone())
         };
         let selected_file_path = file_state
             .selected()
-            .and_then(|row| file_tree.get(row))
+            .and_then(|row| changes.file_tree_row(row))
             .filter(|row| !row.is_directory())
             .map(|row| row.path.clone());
+        changes.file_state = file_state;
+        changes.diff_state = diff_state;
+        changes.select_file_path(selected_file_path);
 
         Ok(Self {
             repository: RepositoryState {
@@ -317,16 +390,7 @@ impl App {
                 worktrees,
                 worktree_state,
             },
-            changes: ChangeState {
-                mode: ChangeMode::Uncommitted,
-                diff_view: DiffView::Hunks,
-                files,
-                file_tree,
-                file_lookup,
-                file_state,
-                diff_state,
-                selected_file_path,
-            },
+            changes,
             history: HistoryState {
                 list_state: history_state,
                 worktree_panel: if has_linked_worktrees {
@@ -411,21 +475,21 @@ impl App {
         let Some(row) = visible.get(visible_position).copied() else {
             return;
         };
-        if self.changes.file_tree[row].is_directory()
+        if self
+            .changes
+            .file_tree_row(row)
+            .is_none_or(FileTreeRow::is_directory)
             || Some(row) == self.changes.file_state.selected()
         {
             return;
         }
-        self.select_file_path(Some(self.changes.file_tree[row].path.clone()));
+        self.select_file_path(self.changes.file_tree_row(row).map(|row| row.path.clone()));
         if self.history_active() {
             self.history.preferred_file = self.selected_file().map(|file| file.path.clone());
         }
-        self.changes.diff_state.select(first_diff_row(
-            &self.changes.files,
-            &self.changes.file_tree,
-            &self.changes.file_lookup,
-            Some(row),
-        ));
+        self.changes
+            .diff_state
+            .select(first_diff_row(&self.changes, Some(row)));
     }
 
     pub fn apply_initial_layout(&mut self, terminal_width: u16, threshold: u16) {
@@ -554,26 +618,12 @@ impl App {
     }
 
     fn visible_file_rows_with_lookup(&self) -> Vec<usize> {
-        filtered_file_tree(
-            &self.changes.file_tree,
-            &self.changes.files,
-            &self.changes.file_lookup,
-            self.search_query(Focus::Files),
-        )
-    }
-
-    pub fn file_tree_label(&self, row_index: usize, visible_rows: &[usize]) -> String {
-        file_tree_label(&self.changes.file_tree, row_index, visible_rows)
+        self.changes
+            .visible_file_rows(self.search_query(Focus::Files))
     }
 
     pub fn selected_file(&self) -> Option<&ChangedFile> {
-        let path = self.changes.selected_file_path.as_deref()?;
-        self.changes
-            .file_lookup
-            .file_indices
-            .get(path)
-            .and_then(|index| self.changes.files.get(*index))
-            .or_else(|| self.changes.files.iter().find(|file| file.path == path))
+        self.changes.selected_file()
     }
 
     pub fn diff_row_count(&self) -> usize {
@@ -588,31 +638,11 @@ impl App {
     }
 
     pub fn selected_file_index(&self) -> Option<usize> {
-        let path = self.changes.selected_file_path.as_deref()?;
-        self.changes
-            .file_lookup
-            .file_indices
-            .get(path)
-            .copied()
-            .or_else(|| self.changes.files.iter().position(|file| file.path == path))
+        self.changes.selected_file_index()
     }
 
     fn select_file_path(&mut self, path: Option<PathBuf>) {
-        self.changes.selected_file_path = path;
-        let row = self.changes.selected_file_path.as_deref().and_then(|path| {
-            self.changes
-                .file_lookup
-                .tree_indices
-                .get(path)
-                .copied()
-                .or_else(|| {
-                    self.changes
-                        .file_tree
-                        .iter()
-                        .position(|row| !row.is_directory() && row.path == path)
-                })
-        });
-        self.changes.file_state.select(row);
+        self.changes.select_file_path(path);
     }
 
     pub fn selected_hunk_index(&self) -> Option<usize> {
@@ -692,23 +722,21 @@ impl App {
         let next = moved_visible_file_selection(
             self.changes.file_state.selected(),
             &visible,
-            &self.changes.file_tree,
+            self.changes.file_tree(),
             delta,
         );
         if next == self.changes.file_state.selected() {
             return;
         }
         let next_path = next
-            .and_then(|row| self.changes.file_tree.get(row))
+            .and_then(|row| self.changes.file_tree_row(row))
             .map(|row| row.path.clone());
         self.select_file_path(next_path);
         if self.history_active() {
             self.history.preferred_file = self.selected_file().map(|file| file.path.clone());
         }
         self.changes.diff_state.select(first_diff_row(
-            &self.changes.files,
-            &self.changes.file_tree,
-            &self.changes.file_lookup,
+            &self.changes,
             self.changes.file_state.selected(),
         ));
     }
@@ -735,17 +763,28 @@ impl App {
         let Some(selected_row) = self.changes.diff_state.selected() else {
             return;
         };
-        let Some(hunk_index) = hunk_at_row(&self.changes.files[file_index], selected_row) else {
+        let Some(hunk_index) = self
+            .changes
+            .files()
+            .get(file_index)
+            .and_then(|file| hunk_at_row(file, selected_row))
+        else {
             return;
         };
 
-        let header_row = self.changes.files[file_index]
+        let header_row = self.changes.files()[file_index]
             .hunks
             .iter()
             .take(hunk_index)
             .map(|hunk| 1 + usize::from(!hunk.collapsed) * hunk.rows.len())
             .sum();
-        let hunk = &mut self.changes.files[file_index].hunks[hunk_index];
+        let Some(hunk) = self
+            .changes
+            .file_mut(file_index)
+            .and_then(|file| file.hunks.get_mut(hunk_index))
+        else {
+            return;
+        };
         hunk.collapsed = !hunk.collapsed;
         self.changes.diff_state.select(Some(header_row));
     }
@@ -953,11 +992,12 @@ impl App {
             Ok(files) => {
                 self.changes.install_files(files);
                 let selected_path = preferred_file
-                    .filter(|path| self.changes.files.iter().any(|file| file.path == *path))
+                    .filter(|path| self.changes.file_index(path).is_some())
                     .map(Path::to_path_buf)
                     .or_else(|| {
-                        first_file_row(&self.changes.file_tree)
-                            .and_then(|row| self.changes.file_tree.get(row))
+                        self.changes
+                            .first_file_row()
+                            .and_then(|row| self.changes.file_tree_row(row))
                             .map(|row| row.path.clone())
                     });
                 self.select_file_path(selected_path);
@@ -994,26 +1034,18 @@ impl App {
             return;
         };
         if let Some(position) = position {
-            for hunk in &mut self.changes.files[file_index].hunks {
+            for hunk in &mut self.changes.file_mut(file_index).unwrap().hunks {
                 hunk.collapsed = position.collapsed_hunks.contains(&hunk.id);
             }
-            let selected = diff_row_for_position(&self.changes.files[file_index], position)
-                .or_else(|| {
-                    first_diff_row(
-                        &self.changes.files,
-                        &self.changes.file_tree,
-                        &self.changes.file_lookup,
-                        self.changes.file_state.selected(),
-                    )
-                });
+            let selected =
+                diff_row_for_position(self.changes.files().get(file_index).unwrap(), position)
+                    .or_else(|| first_diff_row(&self.changes, self.changes.file_state.selected()));
             self.changes.diff_state.select(selected);
             let max_offset = self.diff_row_count().saturating_sub(1);
             *self.changes.diff_state.offset_mut() = position.scroll_offset.min(max_offset);
         } else {
             self.changes.diff_state.select(first_diff_row(
-                &self.changes.files,
-                &self.changes.file_tree,
-                &self.changes.file_lookup,
+                &self.changes,
                 self.changes.file_state.selected(),
             ));
             *self.changes.diff_state.offset_mut() = 0;
@@ -1157,18 +1189,17 @@ impl App {
             .history
             .preferred_file
             .as_deref()
-            .filter(|path| self.changes.files.iter().any(|file| file.path == *path))
+            .filter(|path| self.changes.file_index(path).is_some())
             .map(Path::to_path_buf)
             .or_else(|| {
-                first_file_row(&self.changes.file_tree)
-                    .and_then(|row| self.changes.file_tree.get(row))
+                self.changes
+                    .first_file_row()
+                    .and_then(|row| self.changes.file_tree_row(row))
                     .map(|row| row.path.clone())
             });
         self.select_file_path(selected_path);
         self.changes.diff_state.select(first_diff_row(
-            &self.changes.files,
-            &self.changes.file_tree,
-            &self.changes.file_lookup,
+            &self.changes,
             self.changes.file_state.selected(),
         ));
         Ok(())
@@ -1273,7 +1304,7 @@ mod tests {
     #[test]
     fn selected_location_prefers_new_line_and_falls_back_to_old_line() {
         let mut app = test_app();
-        app.changes.files = vec![ChangedFile {
+        app.changes.install_files(vec![ChangedFile {
             path: PathBuf::from("src/main.rs"),
             old_path: None,
             status: FileStatus::Modified,
@@ -1302,13 +1333,9 @@ mod tests {
                 ],
             }],
             binary: false,
-        }];
-        app.changes.file_tree = vec![FileTreeRow {
-            label: "└── main.rs".into(),
-            path: PathBuf::from("src/main.rs"),
-            kind: FileTreeRowKind::File,
-        }];
-        app.changes.selected_file_path = Some(PathBuf::from("src/main.rs"));
+        }]);
+        app.changes
+            .select_file_path(Some(PathBuf::from("src/main.rs")));
         app.changes.file_state.select(Some(0));
         app.changes.diff_state.select(Some(1));
         app.repository.worktrees = vec![Worktree {
@@ -1348,7 +1375,7 @@ mod tests {
     #[test]
     fn diff_search_jumps_to_matching_rows_and_wraps() {
         let mut app = test_app();
-        app.changes.files = vec![ChangedFile {
+        app.changes.install_files(vec![ChangedFile {
             path: PathBuf::from("src/main.rs"),
             old_path: None,
             status: FileStatus::Modified,
@@ -1384,13 +1411,9 @@ mod tests {
                 ],
             }],
             binary: false,
-        }];
-        app.changes.file_tree = vec![FileTreeRow {
-            label: "└── main.rs".into(),
-            path: PathBuf::from("src/main.rs"),
-            kind: FileTreeRowKind::File,
-        }];
-        app.changes.selected_file_path = Some(PathBuf::from("src/main.rs"));
+        }]);
+        app.changes
+            .select_file_path(Some(PathBuf::from("src/main.rs")));
         app.changes.file_state.select(Some(0));
         app.changes.diff_state.select(Some(0));
         app.view.focus = Focus::Diff;
@@ -1440,16 +1463,12 @@ mod tests {
                 locked_reason: None,
             },
         ];
-        app.changes.files = vec![ChangedFile::empty(
+        app.changes.install_files(vec![ChangedFile::empty(
             PathBuf::from("src/main.rs"),
             FileStatus::Modified,
-        )];
-        app.changes.file_tree = vec![FileTreeRow {
-            label: "└── main.rs".into(),
-            path: PathBuf::from("src/main.rs"),
-            kind: FileTreeRowKind::File,
-        }];
-        app.changes.selected_file_path = Some(PathBuf::from("src/main.rs"));
+        )]);
+        app.changes
+            .select_file_path(Some(PathBuf::from("src/main.rs")));
         app.repository.worktree_state.select(Some(0));
         app.handle_key(key(KeyCode::Char('/')));
         app.handle_key(key(KeyCode::Right));
@@ -1484,24 +1503,28 @@ mod tests {
             ChangedFile::empty(PathBuf::from("src/main.rs"), FileStatus::Modified),
             ChangedFile::empty(PathBuf::from("tests/test.rs"), FileStatus::Modified),
         ];
-        let tree = build_file_tree(&files);
-        let lookup = FileLookup::build(&files, &tree);
-        let visible = filtered_file_tree(&tree, &files, &lookup, "parser");
+        let mut changes = ChangeState::new(ChangeMode::Uncommitted, DiffView::Hunks);
+        changes.install_files(files);
+        let visible = changes.visible_file_rows("parser");
         let labels: Vec<String> = visible
             .iter()
-            .map(|index| file_tree_label(&tree, *index, &visible))
+            .map(|index| crate::ui::files::tree_label(changes.file_tree(), *index, &visible))
             .collect();
         assert_eq!(
             labels,
             vec!["└── src", "    └── git", "        └── parser.rs"]
         );
 
-        let all_rows = (0..tree.len()).collect::<Vec<_>>();
+        let all_rows = (0..changes.file_tree().len()).collect::<Vec<_>>();
         assert_eq!(
-            tree.iter()
-                .map(|row| file_tree_label(
-                    &tree,
-                    tree.iter()
+            changes
+                .file_tree()
+                .iter()
+                .map(|row| crate::ui::files::tree_label(
+                    changes.file_tree(),
+                    changes
+                        .file_tree()
+                        .iter()
                         .position(|candidate| candidate.path == row.path)
                         .unwrap(),
                     &all_rows
@@ -1522,17 +1545,14 @@ mod tests {
     fn visible_file_navigation_skips_filtered_directories() {
         let tree = vec![
             FileTreeRow {
-                label: "src".into(),
                 path: PathBuf::from("src"),
                 kind: FileTreeRowKind::Directory,
             },
             FileTreeRow {
-                label: "src/main.rs".into(),
                 path: PathBuf::from("src/main.rs"),
                 kind: FileTreeRowKind::File,
             },
             FileTreeRow {
-                label: "tests/test.rs".into(),
                 path: PathBuf::from("tests/test.rs"),
                 kind: FileTreeRowKind::File,
             },
@@ -1558,35 +1578,26 @@ mod tests {
             old_path.clone(),
             FileStatus::Modified,
         )]);
-        assert_eq!(
-            app.changes.file_lookup.file_indices.get(&old_path),
-            Some(&0)
-        );
+        assert_eq!(app.changes.file_index(&old_path), Some(0));
 
         app.changes.install_files(vec![ChangedFile::empty(
             new_path.clone(),
             FileStatus::Modified,
         )]);
-        assert!(!app.changes.file_lookup.file_indices.contains_key(&old_path));
-        assert_eq!(
-            app.changes.file_lookup.file_indices.get(&new_path),
-            Some(&0)
-        );
-        assert_eq!(
-            app.changes.file_lookup.tree_indices.get(&new_path),
-            Some(&1)
-        );
+        assert_eq!(app.changes.file_index(&old_path), None);
+        assert_eq!(app.changes.file_index(&new_path), Some(0));
+        assert_eq!(app.changes.tree_index(&new_path), Some(1));
 
-        app.changes.selected_file_path = Some(new_path);
+        app.changes.select_file_path(Some(new_path));
         app.changes.file_state.select(Some(1));
         app.changes.diff_state.select(Some(2));
         app.changes.clear_files();
 
-        assert!(app.changes.files.is_empty());
-        assert!(app.changes.file_tree.is_empty());
-        assert!(app.changes.file_lookup.file_indices.is_empty());
-        assert!(app.changes.file_lookup.tree_indices.is_empty());
-        assert_eq!(app.changes.selected_file_path, None);
+        assert!(app.changes.files().is_empty());
+        assert!(app.changes.file_tree().is_empty());
+        assert_eq!(app.changes.file_index(Path::new("old.rs")), None);
+        assert_eq!(app.changes.tree_index(Path::new("src/new.rs")), None);
+        assert!(app.changes.selected_file().is_none());
         assert_eq!(app.changes.file_state.selected(), None);
         assert_eq!(app.changes.diff_state.selected(), None);
     }
@@ -1634,34 +1645,43 @@ mod tests {
         ];
 
         let tree = build_file_tree(&files);
-        assert_eq!(tree[0].label, "├── AGENTS.md");
-        assert_eq!(tree[1].label, "└── src");
+        let visible = (0..tree.len()).collect::<Vec<_>>();
+        assert_eq!(
+            crate::ui::files::tree_label(&tree, 0, &visible),
+            "├── AGENTS.md"
+        );
+        assert_eq!(crate::ui::files::tree_label(&tree, 1, &visible), "└── src");
         assert!(tree[1].is_directory());
-        assert_eq!(tree[2].label, "    ├── git");
-        assert_eq!(tree[3].label, "    │   └── parser.rs");
-        assert_eq!(tree[4].label, "    └── main.rs");
+        assert_eq!(
+            crate::ui::files::tree_label(&tree, 2, &visible),
+            "    ├── git"
+        );
+        assert_eq!(
+            crate::ui::files::tree_label(&tree, 3, &visible),
+            "    │   └── parser.rs"
+        );
+        assert_eq!(
+            crate::ui::files::tree_label(&tree, 4, &visible),
+            "    └── main.rs"
+        );
     }
 
     #[test]
     fn file_navigation_skips_directories() {
         let tree = vec![
             FileTreeRow {
-                label: "src".into(),
                 path: PathBuf::from("src"),
                 kind: FileTreeRowKind::Directory,
             },
             FileTreeRow {
-                label: "src/a.rs".into(),
                 path: PathBuf::from("src/a.rs"),
                 kind: FileTreeRowKind::File,
             },
             FileTreeRow {
-                label: "tests".into(),
                 path: PathBuf::from("tests"),
                 kind: FileTreeRowKind::Directory,
             },
             FileTreeRow {
-                label: "tests/a.rs".into(),
                 path: PathBuf::from("tests/a.rs"),
                 kind: FileTreeRowKind::File,
             },
@@ -1920,11 +1940,10 @@ mod tests {
     fn history_commit_reload_prefers_the_remembered_file() {
         let mut app = test_app();
         app.history.preferred_file = Some(PathBuf::from("src/app.rs"));
-        app.changes.files = vec![
+        app.changes.install_files(vec![
             ChangedFile::empty(PathBuf::from("README.md"), FileStatus::Modified),
             ChangedFile::empty(PathBuf::from("src/app.rs"), FileStatus::Modified),
-        ];
-        app.changes.file_tree = build_file_tree(&app.changes.files);
+        ]);
         let selected = app
             .history
             .preferred_file
@@ -1935,10 +1954,10 @@ mod tests {
                     .iter()
                     .position(|row| !row.is_directory() && row.path == path)
             })
-            .or_else(|| first_file_row(&app.changes.file_tree));
+            .or_else(|| app.changes.first_file_row());
 
         assert_eq!(
-            selected.map(|row| app.changes.file_tree[row].path.clone()),
+            selected.map(|row| app.changes.file_tree_row(row).unwrap().path.clone()),
             Some(PathBuf::from("src/app.rs"))
         );
     }
@@ -2021,7 +2040,7 @@ mod tests {
     #[test]
     fn mouse_scroll_moves_the_focused_diff() {
         let mut app = test_app();
-        app.changes.files = vec![ChangedFile {
+        app.changes.install_files(vec![ChangedFile {
             path: PathBuf::from("src/main.rs"),
             old_path: None,
             status: FileStatus::Modified,
@@ -2057,13 +2076,9 @@ mod tests {
                 ],
             }],
             binary: false,
-        }];
-        app.changes.file_tree = vec![FileTreeRow {
-            label: "└── main.rs".into(),
-            path: PathBuf::from("src/main.rs"),
-            kind: FileTreeRowKind::File,
-        }];
-        app.changes.selected_file_path = Some(PathBuf::from("src/main.rs"));
+        }]);
+        app.changes
+            .select_file_path(Some(PathBuf::from("src/main.rs")));
         app.changes.file_state.select(Some(0));
         app.changes.diff_state.select(Some(0));
         app.view.focus = Focus::Diff;
@@ -2180,16 +2195,7 @@ mod tests {
                 worktrees: vec![],
                 worktree_state: ListState::default(),
             },
-            changes: ChangeState {
-                mode: ChangeMode::Uncommitted,
-                diff_view: crate::model::DiffView::Hunks,
-                files: vec![],
-                file_tree: vec![],
-                file_lookup: FileLookup::default(),
-                file_state: ListState::default(),
-                diff_state: TableState::default(),
-                selected_file_path: None,
-            },
+            changes: ChangeState::new(ChangeMode::Uncommitted, crate::model::DiffView::Hunks),
             history: HistoryState {
                 list_state: ListState::default(),
                 worktree_panel: WorktreePanel::Worktrees,

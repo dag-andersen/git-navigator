@@ -1,6 +1,6 @@
 use super::{
-    App, Focus, SearchState, diff_row_at, diff_row_at_position, first_diff_row, first_file_row_in,
-    history_list_index, mouse_focus,
+    App, Focus, SearchState, diff_row_at, diff_row_at_position, first_diff_row, history_list_index,
+    mouse_focus,
 };
 use crate::diff_geometry::effective_layout;
 use crate::editor;
@@ -295,18 +295,19 @@ impl App {
                     .file_state
                     .selected()
                     .filter(|selected| visible.contains(selected))
-                    .filter(|selected| !self.changes.file_tree[*selected].is_directory())
-                    .or_else(|| first_file_row_in(&self.changes.file_tree, &visible));
+                    .filter(|selected| {
+                        self.changes
+                            .file_tree_row(*selected)
+                            .is_some_and(|row| !row.is_directory())
+                    })
+                    .or_else(|| self.changes.first_file_row_in(&visible));
                 let selected_path = selected
-                    .and_then(|row| self.changes.file_tree.get(row))
+                    .and_then(|row| self.changes.file_tree_row(row))
                     .map(|row| row.path.clone());
                 self.select_file_path(selected_path);
-                self.changes.diff_state.select(first_diff_row(
-                    &self.changes.files,
-                    &self.changes.file_tree,
-                    &self.changes.file_lookup,
-                    selected,
-                ));
+                self.changes
+                    .diff_state
+                    .select(first_diff_row(&self.changes, selected));
             }
             Focus::Diff => self.search_diff(0),
         }

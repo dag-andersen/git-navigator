@@ -75,12 +75,10 @@ mod tests {
                 binary: false,
             },
         ];
-        let file_tree = crate::app::files::build_tree(&files);
-        let file_lookup = crate::app::files::FileLookup::build(&files, &file_tree);
-        let selected_file_row = file_lookup
-            .tree_indices
-            .get(PathBuf::from("src/main.rs").as_path())
-            .copied()
+        let mut changes = ChangeState::new(ChangeMode::Uncommitted, DiffView::Hunks);
+        changes.install_files(files);
+        let selected_file_row = changes
+            .tree_index(PathBuf::from("src/main.rs").as_path())
             .expect("selected file should be in the tree");
 
         let mut worktree_state = ListState::default();
@@ -89,6 +87,9 @@ mod tests {
         file_state.select(Some(selected_file_row));
         let mut diff_state = TableState::default();
         diff_state.select(Some(0));
+        changes.file_state = file_state;
+        changes.diff_state = diff_state;
+        changes.select_file_path(Some(PathBuf::from("src/main.rs")));
         let app = App {
             repository: RepositoryState {
                 directory: PathBuf::from("/repo"),
@@ -99,16 +100,7 @@ mod tests {
                 ],
                 worktree_state,
             },
-            changes: ChangeState {
-                mode: ChangeMode::Uncommitted,
-                diff_view: DiffView::Hunks,
-                files,
-                file_tree,
-                file_lookup,
-                file_state,
-                diff_state,
-                selected_file_path: Some(PathBuf::from("src/main.rs")),
-            },
+            changes,
             history: HistoryState {
                 list_state: ListState::default(),
                 worktree_panel: WorktreePanel::Worktrees,
@@ -145,7 +137,7 @@ mod tests {
             projection
                 .file_rows
                 .iter()
-                .map(|index| app.changes.file_tree[*index].path.clone())
+                .map(|index| app.changes.file_tree_row(*index).unwrap().path.clone())
                 .collect::<Vec<_>>(),
             vec![PathBuf::from("src"), PathBuf::from("src/main.rs")]
         );

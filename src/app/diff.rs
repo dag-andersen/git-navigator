@@ -13,21 +13,9 @@ pub(crate) struct PositionState {
     pub(crate) collapsed_hunks: Vec<HunkId>,
 }
 
-pub(crate) fn first_row(
-    files: &[ChangedFile],
-    tree: &[crate::model::FileTreeRow],
-    lookup: &crate::app::files::FileLookup,
-    selected: Option<usize>,
-) -> Option<usize> {
+pub(crate) fn first_row(changes: &super::ChangeState, selected: Option<usize>) -> Option<usize> {
     selected
-        .and_then(|row| tree.get(row))
-        .and_then(|row| lookup.file_indices.get(&row.path))
-        .and_then(|index| files.get(*index))
-        .or_else(|| {
-            selected
-                .and_then(|row| tree.get(row))
-                .and_then(|row| files.iter().find(|file| file.path == row.path))
-        })
+        .and_then(|row| changes.file_for_tree_row(row))
         .filter(|file| !file.hunks.is_empty())
         .map(|_| 0)
 }
