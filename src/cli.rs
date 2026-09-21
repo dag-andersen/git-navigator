@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum RenderMode {
@@ -16,6 +16,53 @@ pub enum StartupFocus {
     Diff,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Send a command to a running git-navigator TUI
+    Ctl {
+        #[command(flatten)]
+        control: ControlArgs,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ControlArgs {
+    /// Repository or worktree used to discover the target TUI
+    #[arg(short, long)]
+    pub directory: Option<PathBuf>,
+
+    /// Session ID returned by `git-navigator ctl sessions`
+    #[arg(short, long)]
+    pub session: Option<String>,
+
+    /// Connect directly to this Unix socket
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub command: ControlCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ControlCommand {
+    /// List running git-navigator TUI sessions
+    Sessions,
+    /// Focus a panel without changing the current layout
+    Focus { panel: StartupFocus },
+    /// Expand the currently focused panel
+    Expand,
+    /// Restore the normal multi-panel layout
+    Collapse,
+    /// Select a worktree by its absolute path
+    Worktree { path: PathBuf },
+    /// Select a changed file by its repository-relative path
+    File { path: PathBuf },
+    /// Select a commit by full or short hash
+    Commit { hash: String },
+    /// Refresh the displayed Git state
+    Refresh,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "git-navigator",
@@ -24,7 +71,7 @@ pub enum StartupFocus {
 )]
 pub struct Cli {
     /// Directory inside the repository to inspect
-    pub directory: PathBuf,
+    pub directory: Option<PathBuf>,
 
     /// Base branch used by Branch mode
     #[arg(long, default_value = "main")]
@@ -57,6 +104,9 @@ pub struct Cli {
     /// Snapshot height in terminal cells
     #[arg(long, default_value_t = 40)]
     pub height: u16,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
 #[cfg(test)]
@@ -67,7 +117,7 @@ mod tests {
     fn accepts_a_directory_as_the_first_argument() {
         let cli = Cli::try_parse_from(["git-navigator", "."])
             .expect("the current directory should be accepted");
-        assert_eq!(cli.directory, PathBuf::from("."));
+        assert_eq!(cli.directory, Some(PathBuf::from(".")));
         assert_eq!(cli.base, "main");
         assert!(!cli.render);
         assert!(!cli.ansi);
@@ -117,5 +167,22 @@ mod tests {
             .expect("branch mode should be accepted without an explicit focus");
         assert_eq!(cli.mode, RenderMode::Branch);
         assert_eq!(cli.focus, None);
+    }
+
+    #[test]
+    fn accepts_control_commands_without_a_directory() {
+        let cli = Cli::try_parse_from(["git-navigator", "ctl", "sessions"])
+            .expect("control commands should be accepted");
+        assert!(matches!(cli.command, Some(Command::Ctl { .. })));
+        assert_eq!(cli.directory, None);
+    }
+
+    #[test]
+    fn accepts_explicit_layout_control_commands() {
+        for command in ["expand", "collapse"] {
+            let cli = Cli::try_parse_from(["git-navigator", "ctl", command])
+                .expect("layout control commands should be accepted");
+            assert!(matches!(cli.command, Some(Command::Ctl { .. })));
+        }
     }
 }

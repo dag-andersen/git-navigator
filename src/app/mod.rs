@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    control::{Panel, Request},
     git,
     model::{
         ChangeMode, ChangedFile, Commit, DiffLayout, DiffRowKind, DiffView, FileTreeRow,
@@ -533,6 +534,116 @@ impl App {
             .worktrees
             .iter()
             .any(|worktree| !worktree.is_main)
+    }
+
+    pub fn apply_control(&mut self, request: Request) -> Result<()> {
+        match request {
+            Request::Focus { panel } => self.control_focus(panel),
+            Request::Expand => {
+                self.view.expanded = true;
+                Ok(())
+            }
+            Request::Collapse => {
+                self.view.expanded = false;
+                Ok(())
+            }
+            Request::Worktree { path } => self.control_worktree(&path),
+            Request::File { path } => self.control_file(&path),
+            Request::Commit { hash } => self.control_commit(&hash),
+            Request::Refresh => {
+                self.view.status = None;
+                self.refresh();
+                match self.view.status.take() {
+                    Some(status) if status.kind == StatusKind::Error => anyhow::bail!(status.text),
+                    _ => Ok(()),
+                }
+            }
+        }
+    }
+
+    fn control_focus(&mut self, panel: Panel) -> Result<()> {
+        match panel {
+            Panel::Worktrees => {
+                if self.history_active() && self.has_linked_worktrees() {
+                    self.toggle_history();
+                }
+                self.view.focus = Focus::Worktrees;
+            }
+            Panel::History => {
+                if !self.history_active() {
+                    self.toggle_history();
+                }
+                if !self.history_active() {
+                    anyhow::bail!("commit history is not available");
+                }
+                self.view.focus = Focus::Worktrees;
+            }
+            Panel::Files => self.view.focus = Focus::Files,
+            Panel::Diff => self.view.focus = Focus::Diff,
+        }
+        Ok(())
+    }
+
+    fn control_worktree(&mut self, path: &Path) -> Result<()> {
+        let requested = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let index = self
+            .repository
+            .worktrees
+            .iter()
+            .position(|worktree| worktree.path == requested)
+            .with_context(|| format!("worktree is not registered: {}", path.display()))?;
+        self.history.history_panel = HistoryPanel::Worktrees;
+        self.history.selection = None;
+        self.repository.worktree_state.select(Some(index));
+        self.reload_files(None);
+        self.view.focus = Focus::Worktrees;
+        Ok(())
+    }
+
+    fn control_file(&mut self, path: &Path) -> Result<()> {
+        if path.is_absolute() {
+            anyhow::bail!("file path must be relative to the selected worktree");
+        }
+        let index = self
+            .changes
+            .file_index(path)
+            .with_context(|| format!("file is not in the displayed changes: {}", path.display()))?;
+        let selected_path = self
+            .changes
+            .files()
+            .get(index)
+            .map(|file| file.path.clone())
+            .context("selected file is no longer available")?;
+        self.select_file_path(Some(selected_path));
+        self.changes.diff_state.select(first_diff_row(
+            &self.changes,
+            self.changes.file_state.selected(),
+        ));
+        self.view.focus = Focus::Files;
+        Ok(())
+    }
+
+    fn control_commit(&mut self, hash: &str) -> Result<()> {
+        if !self.history_active() {
+            self.toggle_history();
+        }
+        if !self.history_active() {
+            anyhow::bail!("commit history is not available");
+        }
+        let position = self
+            .history
+            .commits
+            .iter()
+            .position(|commit| commit.hash == hash || commit.short_hash == hash)
+            .with_context(|| format!("commit was not found in history: {hash}"))?;
+        self.select_commit(position + 1);
+        if let Some(status) = self.view.status.take()
+            && status.kind == StatusKind::Error
+        {
+            anyhow::bail!(status.text);
+        }
+        self.view.focus = Focus::Worktrees;
+        Ok(())
     }
 
     pub fn history_active(&self) -> bool {
@@ -1999,6 +2110,32 @@ mod tests {
         app.handle_key(key(KeyCode::Char(' ')));
         assert!(!app.view.expanded);
         assert_eq!(app.view.focus, Focus::Diff);
+    }
+
+    #[test]
+    fn control_navigation_preserves_the_current_expansion_state() {
+        let mut app = test_app();
+        app.view.expanded = false;
+
+        app.apply_control(Request::Focus { panel: Panel::Diff })
+            .expect("focus command should succeed");
+        assert_eq!(app.view.focus, Focus::Diff);
+        assert!(!app.view.expanded);
+
+        app.apply_control(Request::Expand)
+            .expect("expand command should succeed");
+        assert!(app.view.expanded);
+
+        app.apply_control(Request::Focus {
+            panel: Panel::Files,
+        })
+        .expect("focus command should succeed");
+        assert_eq!(app.view.focus, Focus::Files);
+        assert!(app.view.expanded);
+
+        app.apply_control(Request::Collapse)
+            .expect("collapse command should succeed");
+        assert!(!app.view.expanded);
     }
 
     #[test]

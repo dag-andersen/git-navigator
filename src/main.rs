@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod control;
 mod diff_geometry;
 mod editor;
 mod git;
@@ -21,16 +22,23 @@ use ratatui::crossterm::{
 
 use crate::{
     app::{App, Focus, HistoryPanel},
-    cli::{Cli, RenderMode, StartupFocus},
+    cli::{Cli, Command, RenderMode, StartupFocus},
     watcher::AutoRefresh,
 };
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Ctl { control }) = cli.command {
+        return control::run_ctl(control);
+    }
     let directory = cli
         .directory
+        .clone()
+        .context("a repository directory is required")?;
+    let directory_display = directory.display().to_string();
+    let directory = directory
         .canonicalize()
-        .with_context(|| format!("cannot open {}", cli.directory.display()))?;
+        .with_context(|| format!("cannot open {directory_display}"))?;
 
     if !directory.is_dir() {
         bail!("{} is not a directory", directory.display());
@@ -77,9 +85,16 @@ fn main() -> Result<()> {
         app.selected_worktree()
             .map(|worktree| worktree.path.as_path()),
     );
+    let session = control::Session::start(&app.repository.directory)?;
     let mut terminal = ratatui::init();
-    let result = execute!(stdout(), EnableMouseCapture)
-        .and_then(|()| run_app(&mut terminal, &mut app, &mut auto_refresh));
+    let result = execute!(stdout(), EnableMouseCapture).and_then(|()| {
+        run_app(
+            &mut terminal,
+            &mut app,
+            &mut auto_refresh,
+            session.receiver(),
+        )
+    });
     let cleanup_result = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
 
@@ -111,8 +126,20 @@ fn run_app(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     auto_refresh: &mut AutoRefresh,
+    control_rx: &std::sync::mpsc::Receiver<control::ControlMessage>,
 ) -> std::io::Result<()> {
     loop {
+        while let Ok(message) = control_rx.try_recv() {
+            let response = app.apply_control(message.request);
+            let _ = message
+                .response
+                .send(control::Response::from_result(response));
+        }
+        auto_refresh.watch_worktree(
+            app.selected_worktree()
+                .map(|worktree| worktree.path.as_path()),
+            Instant::now(),
+        );
         let now = Instant::now();
         if !app.modal_open()
             && let Some(paths) = auto_refresh.refresh_paths(now)

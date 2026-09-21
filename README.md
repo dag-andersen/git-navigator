@@ -77,6 +77,31 @@ git-navigator . --focus worktrees
 git-navigator . --render --focus history --ansi --width 161 --height 50
 ```
 
+### Controlling a running TUI
+
+An interactive instance exposes a user-only Unix socket while it is running.
+The `ctl` subcommand discovers active instances and sends semantic navigation
+commands to them without injecting keyboard input:
+
+```shell
+git-navigator ctl sessions
+git-navigator ctl --directory /path/to/repository focus diff
+git-navigator ctl --directory /path/to/repository expand
+git-navigator ctl --directory /path/to/repository collapse
+git-navigator ctl --directory /path/to/repository worktree /path/to/worktree
+git-navigator ctl --directory /path/to/repository file src/app.rs
+git-navigator ctl --directory /path/to/repository commit 736a5c4
+git-navigator ctl --directory /path/to/repository refresh
+```
+
+When more than one instance is running, pass the session ID from `ctl
+sessions` with `--session`. Agents can also use `--socket` when the socket
+path is already known. Worktree paths are absolute, while file paths are
+relative to the selected worktree. Control commands are limited to changing
+the displayed view and refreshing Git state. Focus and selection commands
+preserve the current expanded or multi-panel layout. Use `expand` or
+`collapse` when an agent should explicitly change the layout.
+
 The comparison base defaults to `main`. It can be changed with the base option when a repository uses another primary branch.
 
 ## Interface
