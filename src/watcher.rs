@@ -42,6 +42,13 @@ impl AutoRefresh {
         self.schedule.mark_refreshed(now);
     }
 
+    pub fn set_repository(&mut self, repository: &Path, worktree: Option<&Path>, now: Instant) {
+        self.repository = repository.to_path_buf();
+        self.watched_worktree = None;
+        self.backend = None;
+        self.watch_worktree(worktree, now);
+    }
+
     pub fn refresh_paths(&mut self, now: Instant) -> Option<Vec<PathBuf>> {
         if let Some(backend) = &mut self.backend {
             while let Some(event) = backend.next_event() {

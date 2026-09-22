@@ -55,6 +55,9 @@ pub enum ControlCommand {
     Collapse,
     /// Select a worktree by its absolute path
     Worktree { path: PathBuf },
+    /// Switch the TUI to another Git repository
+    #[command(alias = "repo")]
+    Repository { path: PathBuf },
     /// Select a changed file by its repository-relative path
     File { path: PathBuf },
     /// Select a commit by full or short hash
@@ -184,5 +187,20 @@ mod tests {
                 .expect("layout control commands should be accepted");
             assert!(matches!(cli.command, Some(Command::Ctl { .. })));
         }
+    }
+
+    #[test]
+    fn accepts_repository_control_commands() {
+        let cli =
+            Cli::try_parse_from(["git-navigator", "ctl", "repository", "/path/to/repository"])
+                .expect("repository control command should be accepted");
+        let Some(Command::Ctl { control }) = cli.command else {
+            panic!("expected a control command");
+        };
+        assert!(matches!(
+            control.command,
+            ControlCommand::Repository { path }
+                if path.as_path() == std::path::Path::new("/path/to/repository")
+        ));
     }
 }

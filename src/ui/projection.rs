@@ -127,7 +127,10 @@ mod tests {
                 file_filter: "main".into(),
                 search: None,
                 follow_changes: false,
+                repository_picker: None,
+                recent_repositories: Vec::new(),
             },
+            repository_discovery: None,
         };
 
         let projection = panels(&app);

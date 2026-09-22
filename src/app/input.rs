@@ -12,6 +12,11 @@ use ratatui::{
 
 impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.view.repository_picker.is_some() {
+            self.handle_repository_picker_key(key);
+            return false;
+        }
+
         if self.view.delete_confirmation.is_some() {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => self.confirm_worktree_removal(),
@@ -43,6 +48,7 @@ impl App {
             KeyCode::Esc if self.view.focus != Focus::Diff => self.clear_filter(self.view.focus),
             KeyCode::Char('?') => self.view.show_help = true,
             KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('R') => self.open_repository_picker(),
             KeyCode::Char('f') => self.toggle_follow_changes(),
             KeyCode::Char('o') => self.open_selected_worktree(),
             KeyCode::Char('d') if self.view.focus == Focus::Worktrees => {
@@ -82,6 +88,46 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn handle_repository_picker_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.view.repository_picker = None;
+                self.repository_discovery = None;
+            }
+            KeyCode::Enter => {
+                if self
+                    .view
+                    .repository_picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.loading && picker.candidates.is_empty())
+                {
+                    return;
+                }
+                self.switch_repository_from_picker();
+                if self
+                    .view
+                    .status
+                    .as_ref()
+                    .is_none_or(|status| status.kind != crate::app::StatusKind::Error)
+                {
+                    self.view.repository_picker = None;
+                }
+            }
+            KeyCode::Up => self.repository_picker_move(-1),
+            KeyCode::Down => self.repository_picker_move(1),
+            KeyCode::Backspace => self.repository_picker_backspace(),
+            KeyCode::Char('u')
+                if key
+                    .modifiers
+                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.repository_picker_clear()
+            }
+            KeyCode::Char(character) => self.repository_picker_type(character),
+            _ => {}
+        }
     }
 
     fn toggle_follow_changes(&mut self) {

@@ -89,6 +89,7 @@ git-navigator ctl --directory /path/to/repository focus diff
 git-navigator ctl --directory /path/to/repository expand
 git-navigator ctl --directory /path/to/repository collapse
 git-navigator ctl --directory /path/to/repository worktree /path/to/worktree
+git-navigator ctl --directory /path/to/repository repository /path/to/another/repository
 git-navigator ctl --directory /path/to/repository file src/app.rs
 git-navigator ctl --directory /path/to/repository commit 736a5c4
 git-navigator ctl --directory /path/to/repository refresh
@@ -96,13 +97,48 @@ git-navigator ctl --directory /path/to/repository refresh
 
 When more than one instance is running, pass the session ID from `ctl
 sessions` with `--session`. Agents can also use `--socket` when the socket
-path is already known. Worktree paths are absolute, while file paths are
-relative to the selected worktree. Control commands are limited to changing
+path is already known. Worktree paths are absolute, while repository paths are
+resolved relative to the directory from which `ctl` is run. File paths are
+relative to the selected worktree. The `repository` command replaces the
+repository shown by the running TUI, so an agent can keep one TUI open and
+switch it between repositories:
+
+```shell
+git-navigator ctl --directory /path/to/current/repository repository /path/to/agent/repository
+```
+
+After switching, use the new repository path with subsequent `ctl` commands, or
+use the session ID from `ctl sessions`. Control commands are limited to changing
 the displayed view and refreshing Git state. Focus and selection commands
 preserve the current expanded or multi-panel layout. Use `expand` or
 `collapse` when an agent should explicitly change the layout.
 
 The comparison base defaults to `main`. It can be changed with the base option when a repository uses another primary branch.
+
+### Switching repositories from the TUI
+
+Press uppercase `R` to open the repository switcher. It searches repositories
+near the current repository and under the roots configured in
+`~/.config/git-navigator/config`.
+
+The configuration file uses TOML syntax:
+
+```toml
+repository_roots = [
+  "~/CodeProjects",
+  "~/CodeProjects/Egmont",
+]
+```
+
+The file is optional. Paths beginning with `~/` expand from the user's home
+directory. Relative paths are resolved relative to the directory containing
+the configuration file. `XDG_CONFIG_HOME` is respected when it is set, so the
+alternate location is `$XDG_CONFIG_HOME/git-navigator/config`.
+
+In the picker, type a fuzzy search such as `codepr`, use Up and Down to select a
+match, and press Enter to switch. Use Escape to cancel and Ctrl-U to clear the
+query. The current repository is added to the recent candidates for the next
+switch.
 
 ## Interface
 

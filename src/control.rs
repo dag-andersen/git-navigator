@@ -23,6 +23,7 @@ pub enum Request {
     Expand,
     Collapse,
     Worktree { path: PathBuf },
+    Repository { path: PathBuf },
     File { path: PathBuf },
     Commit { hash: String },
     Refresh,
@@ -65,7 +66,7 @@ pub struct ControlMessage {
     pub response: Sender<Response>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionInfo {
     pub id: String,
     pub pid: u32,
@@ -98,8 +99,7 @@ impl Session {
             repository: repository.to_path_buf(),
             socket: socket.clone(),
         };
-        fs::write(&metadata, serde_json::to_vec(&info)?)
-            .with_context(|| format!("could not write {}", metadata.display()))?;
+        write_session_info(&metadata, &info)?;
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("git-navigator-control".into())
@@ -110,6 +110,23 @@ impl Session {
 
     pub fn receiver(&self) -> &Receiver<ControlMessage> {
         &self.receiver
+    }
+
+    pub fn update_repository(&mut self, repository: &Path) -> Result<()> {
+        if self.info.repository == repository {
+            return Ok(());
+        }
+        let mut info = self.info.clone();
+        info.repository = repository.to_path_buf();
+        let metadata = self
+            .info
+            .socket
+            .parent()
+            .context("control socket has no parent directory")?
+            .join(format!("{}.json", self.info.id));
+        write_session_info(&metadata, &info)?;
+        self.info = info;
+        Ok(())
     }
 }
 
@@ -164,6 +181,11 @@ fn request_from_command(command: ControlCommand) -> Result<Request> {
         ControlCommand::Expand => Request::Expand,
         ControlCommand::Collapse => Request::Collapse,
         ControlCommand::Worktree { path } => Request::Worktree { path },
+        ControlCommand::Repository { path } => Request::Repository {
+            path: path
+                .canonicalize()
+                .with_context(|| format!("cannot open repository {}", path.display()))?,
+        },
         ControlCommand::File { path } => Request::File { path },
         ControlCommand::Commit { hash } => Request::Commit { hash },
         ControlCommand::Refresh => Request::Refresh,
@@ -302,6 +324,17 @@ fn handle_connection(stream: UnixStream, sender: Sender<ControlMessage>) {
 
 fn session_directory() -> Result<PathBuf> {
     Ok(std::env::temp_dir().join(SESSION_DIRECTORY))
+}
+
+fn write_session_info(metadata: &Path, info: &SessionInfo) -> Result<()> {
+    let temporary = metadata.with_extension("json.tmp");
+    fs::write(&temporary, serde_json::to_vec(info)?)
+        .with_context(|| format!("could not write {}", temporary.display()))?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("could not secure {}", temporary.display()))?;
+    fs::rename(&temporary, metadata)
+        .with_context(|| format!("could not replace {}", metadata.display()))?;
+    Ok(())
 }
 
 fn timestamp() -> u128 {

@@ -39,6 +39,7 @@ const ACTIVE_BORDER: Color = Color::Cyan;
 const INACTIVE_BORDER: Color = Color::DarkGray;
 const COMPACT_LAYOUT_THRESHOLD: u16 = 120;
 const WORKTREE_ITEM_HEIGHT: usize = 2;
+const REPOSITORY_PICKER_MAX_VISIBLE: usize = 18;
 pub(crate) const SELECTED: Style = Style::new()
     .fg(Color::Black)
     .bg(Color::Cyan)
@@ -106,6 +107,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     if let Some(confirmation) = &app.view.delete_confirmation {
         render_delete_confirmation(frame, confirmation);
+    }
+    if app.view.repository_picker.is_some() {
+        render_repository_picker(frame, app);
     }
 }
 
@@ -686,6 +690,7 @@ fn render_help(frame: &mut Frame) {
         help_line("c", "Copy selected file path and line"),
         help_line("/", "Search the focused panel"),
         help_line("r", "Refresh worktrees and changes"),
+        help_line("R", "Switch to another Git repository"),
         help_line("f", "Toggle following the latest changed file and diff"),
         help_line("o", "Open the selected worktree in the default editor"),
         help_line("d", "Clean up the selected worktree"),
@@ -753,6 +758,90 @@ fn render_delete_confirmation(frame: &mut Frame, confirmation: &crate::app::Dele
                     .border_type(BorderType::Rounded)
                     .border_style(Style::new().fg(Color::LightRed))
                     .title(" Confirm cleanup "),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_repository_picker(frame: &mut Frame, app: &App) {
+    let picker = app.view.repository_picker.as_ref().unwrap();
+    let matches = app.repository_picker_matches();
+    let selected = picker.selected.min(matches.len().saturating_sub(1));
+    // Reserve the full result-list height while discovery is active. This keeps
+    // the modal stable as batches of repositories arrive from the loader.
+    let visible_count = if picker.loading {
+        REPOSITORY_PICKER_MAX_VISIBLE
+    } else {
+        matches.len().clamp(1, REPOSITORY_PICKER_MAX_VISIBLE)
+    };
+    let window = crate::app::repository_picker_window(matches.len(), selected, visible_count);
+    let desired_height = u32::try_from(visible_count + 7).unwrap_or(u32::MAX);
+    let screen_height = u32::from(frame.area().height.max(1));
+    let vertical = ((desired_height * 100).div_ceil(screen_height)).clamp(20, 90) as u16;
+    let area = centered_rect(82, vertical, frame.area());
+    frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::styled("Search repositories", Style::new().fg(Color::Cyan).bold()),
+        Line::from(vec![
+            Span::styled("> ", Style::new().fg(Color::Yellow)),
+            Span::styled(&picker.query, Style::new().fg(Color::White)),
+            Span::styled("_", Style::new().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
+    ];
+    if picker.loading && picker.candidates.is_empty() {
+        lines.push(Line::styled(
+            "Loading repositories...",
+            Style::new().fg(Color::Yellow),
+        ));
+    } else if matches.is_empty() {
+        lines.push(Line::styled(
+            "No matching Git repositories",
+            Style::new().fg(Color::DarkGray),
+        ));
+    } else {
+        for (index, path) in matches[window.clone()].iter().enumerate() {
+            let absolute_index = window.start + index;
+            let style = if absolute_index == selected {
+                SELECTED
+            } else {
+                Style::default()
+            };
+            lines.push(Line::styled(
+                format!(
+                    "{} {}",
+                    if absolute_index == selected {
+                        "›"
+                    } else {
+                        " "
+                    },
+                    path.display()
+                ),
+                style,
+            ));
+        }
+    }
+    if picker.loading && !picker.candidates.is_empty() {
+        lines.push(Line::styled(
+            "Still loading more repositories...",
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::styled(
+            "Enter switch  Up/Down select  Esc cancel",
+            Style::new().fg(Color::DarkGray),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(Color::Cyan))
+                    .title(" Repository switcher "),
             )
             .wrap(Wrap { trim: false }),
         area,
@@ -1099,7 +1188,10 @@ mod tests {
                 file_filter: String::new(),
                 search: None,
                 follow_changes: false,
+                repository_picker: None,
+                recent_repositories: Vec::new(),
             },
+            repository_discovery: None,
         };
         app.repository
             .worktrees
@@ -1274,7 +1366,10 @@ mod tests {
                 file_filter: String::new(),
                 search: None,
                 follow_changes: false,
+                repository_picker: None,
+                recent_repositories: Vec::new(),
             },
+            repository_discovery: None,
         };
 
         assert!(!history_commit_is_in_branch_diff(&app, "head"));

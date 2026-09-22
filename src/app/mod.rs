@@ -6,8 +6,10 @@ mod navigation;
 mod search;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
+    fs,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, TryRecvError},
 };
 
 use crate::{
@@ -20,6 +22,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use ratatui::widgets::{ListState, TableState};
+use serde::Deserialize;
 
 #[cfg(test)]
 use ratatui::{
@@ -234,7 +237,7 @@ pub struct HistoryState {
     pub preferred_file: Option<PathBuf>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ViewState {
     pub diff_layout: DiffLayout,
     pub line_wrap: bool,
@@ -249,6 +252,16 @@ pub struct ViewState {
     pub file_filter: String,
     pub search: Option<SearchState>,
     pub follow_changes: bool,
+    pub repository_picker: Option<RepositoryPicker>,
+    pub recent_repositories: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepositoryPicker {
+    pub query: String,
+    pub candidates: Vec<PathBuf>,
+    pub selected: usize,
+    pub loading: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -310,6 +323,13 @@ pub struct App {
     pub changes: ChangeState,
     pub history: HistoryState,
     pub view: ViewState,
+    pub(crate) repository_discovery: Option<Receiver<RepositoryDiscoveryUpdate>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum RepositoryDiscoveryUpdate {
+    Candidates(Vec<PathBuf>),
+    Finished,
 }
 
 #[derive(Clone, Debug)]
@@ -437,7 +457,10 @@ impl App {
                 file_filter: String::new(),
                 search: None,
                 follow_changes: false,
+                repository_picker: None,
+                recent_repositories: Vec::new(),
             },
+            repository_discovery: None,
         })
     }
 
@@ -548,6 +571,7 @@ impl App {
                 Ok(())
             }
             Request::Worktree { path } => self.control_worktree(&path),
+            Request::Repository { path } => self.control_repository(&path),
             Request::File { path } => self.control_file(&path),
             Request::Commit { hash } => self.control_commit(&hash),
             Request::Refresh => {
@@ -597,6 +621,33 @@ impl App {
         self.repository.worktree_state.select(Some(index));
         self.reload_files(None);
         self.view.focus = Focus::Worktrees;
+        Ok(())
+    }
+
+    fn control_repository(&mut self, path: &Path) -> Result<()> {
+        let display = path.display().to_string();
+        let directory = path
+            .canonicalize()
+            .with_context(|| format!("cannot open repository {display}"))?;
+        if !directory.is_dir() {
+            anyhow::bail!("{display} is not a directory");
+        }
+
+        let previous_view = self.view.clone();
+        let previous_mode = self.changes.mode;
+        let previous_diff_view = self.changes.diff_view;
+        let mut replacement = Self::load(directory, self.repository.base.clone())?;
+        replacement.changes.mode = previous_mode;
+        replacement.changes.diff_view = previous_diff_view;
+        replacement.reload_files(None);
+        replacement.view.diff_layout = previous_view.diff_layout;
+        replacement.view.line_wrap = previous_view.line_wrap;
+        replacement.view.expanded = previous_view.expanded;
+        replacement.view.initial_layout_applied = previous_view.initial_layout_applied;
+        replacement.view.panel_layout = previous_view.panel_layout;
+        replacement.view.focus = previous_view.focus;
+        replacement.view.follow_changes = previous_view.follow_changes;
+        *self = replacement;
         Ok(())
     }
 
@@ -803,7 +854,140 @@ impl App {
     }
 
     pub fn modal_open(&self) -> bool {
-        self.view.show_help || self.view.delete_confirmation.is_some()
+        self.view.show_help
+            || self.view.delete_confirmation.is_some()
+            || self.view.repository_picker.is_some()
+    }
+
+    pub fn repository_picker_matches(&self) -> Vec<PathBuf> {
+        let Some(picker) = &self.view.repository_picker else {
+            return Vec::new();
+        };
+        let mut matches: Vec<_> = picker
+            .candidates
+            .iter()
+            .filter(|path| fuzzy_match(&picker.query, &path.display().to_string()))
+            .cloned()
+            .collect();
+        matches.sort_by_key(|path| {
+            (
+                fuzzy_match_score(&picker.query, &path.display().to_string()),
+                path.display().to_string(),
+            )
+        });
+        matches
+    }
+
+    fn open_repository_picker(&mut self) {
+        let current = self.repository.directory.clone();
+        let recent = self.view.recent_repositories.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            stream_repository_candidates(&current, &recent, &sender);
+        });
+        self.view.repository_picker = Some(RepositoryPicker {
+            query: String::new(),
+            candidates: Vec::new(),
+            selected: 0,
+            loading: true,
+        });
+        self.repository_discovery = Some(receiver);
+        self.view.status = None;
+    }
+
+    pub fn poll_repository_discovery(&mut self) {
+        let Some(result) = self
+            .repository_discovery
+            .as_ref()
+            .map(|receiver| receiver.try_recv())
+        else {
+            return;
+        };
+        match result {
+            Ok(RepositoryDiscoveryUpdate::Candidates(candidates)) => {
+                if let Some(picker) = &mut self.view.repository_picker {
+                    picker.candidates = candidates;
+                    picker.selected = picker
+                        .selected
+                        .min(picker.candidates.len().saturating_sub(1));
+                }
+            }
+            Ok(RepositoryDiscoveryUpdate::Finished) => {
+                if let Some(picker) = &mut self.view.repository_picker {
+                    picker.loading = false;
+                }
+                self.repository_discovery = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                if let Some(picker) = &mut self.view.repository_picker {
+                    picker.loading = false;
+                }
+                self.repository_discovery = None;
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
+    fn switch_repository_from_picker(&mut self) {
+        let Some(path) = self
+            .repository_picker_matches()
+            .get(
+                self.view
+                    .repository_picker
+                    .as_ref()
+                    .map_or(0, |picker| picker.selected),
+            )
+            .cloned()
+        else {
+            self.set_error("No matching Git repository");
+            return;
+        };
+        let mut recent = self.view.recent_repositories.clone();
+        recent.retain(|candidate| candidate != &path);
+        recent.insert(0, path.clone());
+        match self.control_repository(&path) {
+            Ok(()) => self.view.recent_repositories = recent,
+            Err(error) => self.set_error(format!("Could not switch repository: {error:#}")),
+        }
+    }
+
+    fn repository_picker_backspace(&mut self) {
+        let Some(picker) = &mut self.view.repository_picker else {
+            return;
+        };
+        picker.query.pop();
+        picker.selected = 0;
+    }
+
+    fn repository_picker_type(&mut self, character: char) {
+        let Some(picker) = &mut self.view.repository_picker else {
+            return;
+        };
+        picker.query.push(character);
+        picker.selected = 0;
+    }
+
+    fn repository_picker_move(&mut self, delta: isize) {
+        let count = self.repository_picker_matches().len();
+        let Some(picker) = &mut self.view.repository_picker else {
+            return;
+        };
+        if count == 0 {
+            picker.selected = 0;
+            return;
+        }
+        picker.selected = match delta.cmp(&0) {
+            std::cmp::Ordering::Less => picker.selected.saturating_sub(1),
+            std::cmp::Ordering::Equal => picker.selected,
+            std::cmp::Ordering::Greater => (picker.selected + 1).min(count - 1),
+        };
+    }
+
+    fn repository_picker_clear(&mut self) {
+        if let Some(picker) = &mut self.view.repository_picker {
+            picker.query.clear();
+            picker.selected = 0;
+        }
     }
 
     fn move_up(&mut self) {
@@ -1470,6 +1654,161 @@ impl App {
     }
 }
 
+fn stream_repository_candidates(
+    current: &Path,
+    recent: &[PathBuf],
+    sender: &mpsc::Sender<RepositoryDiscoveryUpdate>,
+) {
+    let mut candidates = BTreeSet::new();
+    for path in recent {
+        add_repository_candidate(&mut candidates, path);
+    }
+    add_repository_candidate(&mut candidates, current);
+    if let Some(parent) = current.parent()
+        && let Ok(entries) = fs::read_dir(parent)
+    {
+        for entry in entries.flatten() {
+            add_repository_candidate(&mut candidates, &entry.path());
+        }
+    }
+    send_repository_candidates(sender, &candidates);
+
+    for root in configured_repository_roots() {
+        collect_repository_candidates_stream(&mut candidates, &root, 2, sender);
+    }
+    let _ = sender.send(RepositoryDiscoveryUpdate::Finished);
+}
+
+fn collect_repository_candidates_stream(
+    candidates: &mut BTreeSet<PathBuf>,
+    root: &Path,
+    depth: usize,
+    sender: &mpsc::Sender<RepositoryDiscoveryUpdate>,
+) {
+    if depth == 0 {
+        if add_repository_candidate(candidates, root) {
+            send_repository_candidates(sender, candidates);
+        }
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if add_repository_candidate(candidates, &path) {
+                send_repository_candidates(sender, candidates);
+            } else {
+                collect_repository_candidates_stream(candidates, &path, depth - 1, sender);
+            }
+        }
+    }
+}
+
+fn send_repository_candidates(
+    sender: &mpsc::Sender<RepositoryDiscoveryUpdate>,
+    candidates: &BTreeSet<PathBuf>,
+) {
+    let _ = sender.send(RepositoryDiscoveryUpdate::Candidates(
+        candidates.iter().cloned().collect(),
+    ));
+}
+
+fn configured_repository_roots() -> Vec<PathBuf> {
+    let Some(config_file) = repository_config_file() else {
+        return Vec::new();
+    };
+    let Ok(contents) = fs::read_to_string(&config_file) else {
+        return Vec::new();
+    };
+    let Ok(config) = toml::from_str::<RepositoryConfig>(&contents) else {
+        return Vec::new();
+    };
+    config
+        .repository_roots
+        .into_iter()
+        .map(|root| expand_config_path(&root, &config_file))
+        .collect()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RepositoryConfig {
+    #[serde(default)]
+    repository_roots: Vec<PathBuf>,
+}
+
+fn repository_config_file() -> Option<PathBuf> {
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(config_home).join("git-navigator/config"));
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".config/git-navigator/config"))
+}
+
+fn expand_config_path(path: &Path, config_file: &Path) -> PathBuf {
+    let path_text = path.to_string_lossy();
+    if path_text == "~" {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(relative) = path_text.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(relative);
+    }
+    if path.is_relative()
+        && let Some(parent) = config_file.parent()
+    {
+        return parent.join(path);
+    }
+    path.to_path_buf()
+}
+
+fn add_repository_candidate(candidates: &mut BTreeSet<PathBuf>, path: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    is_git_repository(&path) && candidates.insert(path)
+}
+
+fn is_git_repository(path: &Path) -> bool {
+    path.join(".git").exists()
+        || std::process::Command::new("git")
+            .args(["-C", &path.to_string_lossy(), "rev-parse", "--git-dir"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+}
+
+fn fuzzy_match_score(query: &str, candidate: &str) -> usize {
+    if query.is_empty() {
+        return candidate.len();
+    }
+    let query = query.to_lowercase();
+    let candidate = candidate.to_lowercase();
+    candidate
+        .find(&query)
+        .map_or(candidate.len() + query.len(), |position| position)
+}
+
+pub(crate) fn repository_picker_window(
+    total: usize,
+    selected: usize,
+    maximum_visible: usize,
+) -> std::ops::Range<usize> {
+    if total == 0 || maximum_visible == 0 {
+        return 0..0;
+    }
+    let visible = total.min(maximum_visible);
+    let selected = selected.min(total - 1);
+    let start = selected
+        .saturating_sub(visible / 2)
+        .min(total.saturating_sub(visible));
+    start..start + visible
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1490,6 +1829,30 @@ mod tests {
         assert!(fuzzy_match("NAV", "git-navigator-demo"));
         assert!(!fuzzy_match("zz", "git-navigator-demo"));
         assert!(fuzzy_match("", "anything"));
+    }
+
+    #[test]
+    fn config_paths_expand_home_and_config_relative_values() {
+        let config_file = Path::new("/home/test/.config/git-navigator/config");
+        assert_eq!(
+            expand_config_path(Path::new("relative/projects"), config_file),
+            PathBuf::from("/home/test/.config/git-navigator/relative/projects")
+        );
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(home) = home {
+            assert_eq!(
+                expand_config_path(Path::new("~/projects"), config_file),
+                home.join("projects")
+            );
+        }
+    }
+
+    #[test]
+    fn repository_picker_window_keeps_the_selected_result_visible() {
+        assert_eq!(repository_picker_window(5, 2, 18), 0..5);
+        assert_eq!(repository_picker_window(30, 0, 18), 0..18);
+        assert_eq!(repository_picker_window(30, 15, 18), 6..24);
+        assert_eq!(repository_picker_window(30, 29, 18), 12..30);
     }
 
     #[test]
@@ -2139,6 +2502,114 @@ mod tests {
     }
 
     #[test]
+    fn repository_control_switches_the_displayed_repository_and_keeps_layout() {
+        let target = tempfile::tempdir().expect("temporary repository should be created");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(target.path())
+            .status()
+            .expect("git init should run");
+        std::fs::write(target.path().join("README.md"), "target")
+            .expect("target file should be written");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(target.path())
+            .status()
+            .expect("git add should run");
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(target.path())
+            .status()
+            .expect("git commit should run");
+
+        let mut app = test_app();
+        app.view.expanded = true;
+        app.view.panel_layout = PanelLayout::SidebarTop;
+        app.view.focus = Focus::Diff;
+        app.apply_control(Request::Repository {
+            path: target.path().to_path_buf(),
+        })
+        .expect("repository control should succeed");
+
+        assert_eq!(
+            app.repository.directory,
+            target
+                .path()
+                .canonicalize()
+                .expect("target repository should canonicalize")
+        );
+        assert!(app.view.expanded);
+        assert_eq!(app.view.panel_layout, PanelLayout::SidebarTop);
+        assert_eq!(app.view.focus, Focus::Diff);
+    }
+
+    #[test]
+    fn uppercase_r_opens_a_repository_picker_for_fuzzy_selection() {
+        let mut app = test_app();
+
+        app.handle_key(key(KeyCode::Char('R')));
+        assert!(app.modal_open());
+        assert!(app.view.repository_picker.is_some());
+        app.view.repository_picker.as_mut().unwrap().candidates =
+            vec![PathBuf::from("/Users/me/CodeProjects/demo")];
+
+        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(key(KeyCode::Char('o')));
+        app.handle_key(key(KeyCode::Char('d')));
+        app.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(
+            app.view
+                .repository_picker
+                .as_ref()
+                .map(|picker| picker.query.as_str()),
+            Some("code")
+        );
+    }
+
+    #[test]
+    fn repository_discovery_updates_candidates_while_picker_is_open() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RepositoryDiscoveryUpdate::Candidates(vec![PathBuf::from(
+                "/repo/one",
+            )]))
+            .expect("candidate update should be sent");
+        sender
+            .send(RepositoryDiscoveryUpdate::Finished)
+            .expect("completion update should be sent");
+        let mut app = test_app();
+        app.view.repository_picker = Some(RepositoryPicker {
+            query: String::new(),
+            candidates: Vec::new(),
+            selected: 0,
+            loading: true,
+        });
+        app.repository_discovery = Some(receiver);
+
+        app.poll_repository_discovery();
+        assert_eq!(
+            app.view
+                .repository_picker
+                .as_ref()
+                .map(|picker| picker.candidates.as_slice()),
+            Some([PathBuf::from("/repo/one")].as_slice())
+        );
+        assert!(app.view.repository_picker.as_ref().unwrap().loading);
+
+        app.poll_repository_discovery();
+        assert!(!app.view.repository_picker.as_ref().unwrap().loading);
+        assert!(app.repository_discovery.is_none());
+    }
+
+    #[test]
     fn panel_layout_cycles_through_all_layouts() {
         assert_eq!(PanelLayout::Columns.toggle(), PanelLayout::SidebarLeft);
         assert_eq!(PanelLayout::SidebarLeft.toggle(), PanelLayout::SidebarTop);
@@ -2547,7 +3018,10 @@ mod tests {
                 file_filter: String::new(),
                 search: None,
                 follow_changes: false,
+                repository_picker: None,
+                recent_repositories: Vec::new(),
             },
+            repository_discovery: None,
         }
     }
 

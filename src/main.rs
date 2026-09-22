@@ -85,16 +85,10 @@ fn main() -> Result<()> {
         app.selected_worktree()
             .map(|worktree| worktree.path.as_path()),
     );
-    let session = control::Session::start(&app.repository.directory)?;
+    let mut session = control::Session::start(&app.repository.directory)?;
     let mut terminal = ratatui::init();
-    let result = execute!(stdout(), EnableMouseCapture).and_then(|()| {
-        run_app(
-            &mut terminal,
-            &mut app,
-            &mut auto_refresh,
-            session.receiver(),
-        )
-    });
+    let result = execute!(stdout(), EnableMouseCapture)
+        .and_then(|()| run_app(&mut terminal, &mut app, &mut auto_refresh, &mut session));
     let cleanup_result = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
 
@@ -126,11 +120,32 @@ fn run_app(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     auto_refresh: &mut AutoRefresh,
-    control_rx: &std::sync::mpsc::Receiver<control::ControlMessage>,
+    session: &mut control::Session,
 ) -> std::io::Result<()> {
     loop {
-        while let Ok(message) = control_rx.try_recv() {
+        app.poll_repository_discovery();
+        while let Ok(message) = session.receiver().try_recv() {
+            let is_repository_switch =
+                matches!(&message.request, control::Request::Repository { .. });
             let response = app.apply_control(message.request);
+            if response.is_ok()
+                && is_repository_switch
+                && let Err(error) = session.update_repository(&app.repository.directory)
+            {
+                let _ = message.response.send(control::Response {
+                    ok: false,
+                    error: Some(format!("could not update session repository: {error:#}")),
+                });
+                continue;
+            }
+            if response.is_ok() && is_repository_switch {
+                auto_refresh.set_repository(
+                    &app.repository.directory,
+                    app.selected_worktree()
+                        .map(|worktree| worktree.path.as_path()),
+                    Instant::now(),
+                );
+            }
             let _ = message
                 .response
                 .send(control::Response::from_result(response));
@@ -163,12 +178,24 @@ fn run_app(
         );
         terminal.draw(|frame| ui::render(frame, app))?;
         if event::poll(Duration::from_millis(100))? {
+            let repository_before_input = app.repository.directory.clone();
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press && app.handle_key(key) => {
                     return Ok(());
                 }
                 Event::Mouse(mouse) => app.handle_mouse(mouse, areas),
                 _ => {}
+            }
+            if app.repository.directory != repository_before_input {
+                session
+                    .update_repository(&app.repository.directory)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                auto_refresh.set_repository(
+                    &app.repository.directory,
+                    app.selected_worktree()
+                        .map(|worktree| worktree.path.as_path()),
+                    Instant::now(),
+                );
             }
             auto_refresh.watch_worktree(
                 app.selected_worktree()
