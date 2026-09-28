@@ -143,10 +143,11 @@ pub fn run_ctl(args: ControlArgs) -> Result<()> {
     if matches!(args.command, ControlCommand::Sessions) {
         for session in discover_sessions(args.directory.as_deref())? {
             println!(
-                "{}\t{}\t{}",
+                "{}\t{}\t{}\t{}",
                 session.id,
                 session.repository.display(),
-                session.socket.display()
+                session.socket.display(),
+                session.pid
             );
         }
         return Ok(());

@@ -616,7 +616,11 @@ impl App {
             .iter()
             .position(|worktree| worktree.path == requested)
             .with_context(|| format!("worktree is not registered: {}", path.display()))?;
-        self.history.history_panel = HistoryPanel::Worktrees;
+        self.history.history_panel = if self.has_linked_worktrees() {
+            HistoryPanel::Worktrees
+        } else {
+            HistoryPanel::History
+        };
         self.history.selection = None;
         self.repository.worktree_state.select(Some(index));
         self.reload_files(None);
