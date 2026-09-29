@@ -106,6 +106,12 @@ pub enum FileStatus {
     Conflicted,
 }
 
+impl FileStatus {
+    pub fn is_untracked(self) -> bool {
+        self == Self::Untracked
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChangedFile {
     pub path: PathBuf,

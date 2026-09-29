@@ -16,8 +16,8 @@ use crate::{
     control::{Panel, Request},
     git,
     model::{
-        ChangeMode, ChangedFile, Commit, DiffLayout, DiffRowKind, DiffView, FileTreeRow,
-        HistorySelection, Worktree,
+        ChangeMode, ChangedFile, Commit, DiffLayout, DiffRowKind, DiffView, FileStatus,
+        FileTreeRow, HistorySelection, Worktree,
     },
 };
 use anyhow::{Context, Result};
@@ -80,6 +80,14 @@ pub struct DeleteConfirmation {
     pub path: PathBuf,
     pub branch: String,
     pub prune_only: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscardConfirmation {
+    pub worktree: PathBuf,
+    pub path: PathBuf,
+    pub old_path: Option<PathBuf>,
+    pub status: FileStatus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -247,6 +255,7 @@ pub struct ViewState {
     pub focus: Focus,
     pub show_help: bool,
     pub delete_confirmation: Option<DeleteConfirmation>,
+    pub discard_confirmation: Option<DiscardConfirmation>,
     pub status: Option<StatusMessage>,
     pub worktree_filter: String,
     pub file_filter: String,
@@ -452,6 +461,7 @@ impl App {
                 focus,
                 show_help: false,
                 delete_confirmation: None,
+                discard_confirmation: None,
                 status: None,
                 worktree_filter: String::new(),
                 file_filter: String::new(),
@@ -860,6 +870,7 @@ impl App {
     pub fn modal_open(&self) -> bool {
         self.view.show_help
             || self.view.delete_confirmation.is_some()
+            || self.view.discard_confirmation.is_some()
             || self.view.repository_picker.is_some()
     }
 
@@ -1308,6 +1319,57 @@ impl App {
             prune_only: worktree.is_missing(),
         });
         self.view.status = None;
+    }
+
+    fn request_file_discard(&mut self) {
+        if self.changes.mode != ChangeMode::Uncommitted || self.history_commit_selected() {
+            self.set_error("File changes can only be discarded from the uncommitted view");
+            return;
+        }
+        let Some(worktree) = self.selected_worktree() else {
+            self.set_error("No worktree is selected");
+            return;
+        };
+        if worktree.is_missing() {
+            self.set_error("Cannot discard changes from an unavailable worktree");
+            return;
+        }
+        let Some(file) = self.selected_file() else {
+            return;
+        };
+        self.view.discard_confirmation = Some(DiscardConfirmation {
+            worktree: worktree.path.clone(),
+            path: file.path.clone(),
+            old_path: file.old_path.clone(),
+            status: file.status,
+        });
+        self.view.status = None;
+    }
+
+    fn confirm_file_discard(&mut self) {
+        let Some(confirmation) = self.view.discard_confirmation.take() else {
+            return;
+        };
+        match git::discard_file(
+            &confirmation.worktree,
+            &confirmation.path,
+            confirmation.old_path.as_deref(),
+            confirmation.status,
+        ) {
+            Ok(()) => {
+                self.refresh();
+                if self.view.status.is_none() {
+                    self.set_info(format!(
+                        "Discarded changes: {}",
+                        confirmation.path.display()
+                    ));
+                }
+            }
+            Err(error) => self.set_error(format!(
+                "Could not discard {}: {error:#}",
+                confirmation.path.display()
+            )),
+        }
     }
 
     fn confirm_worktree_removal(&mut self) {
@@ -2717,6 +2779,46 @@ mod tests {
     }
 
     #[test]
+    fn d_opens_file_discard_confirmation_only_from_files_focus() {
+        let mut app = test_app();
+        app.repository.worktrees.push(Worktree {
+            path: PathBuf::from("/repo"),
+            branch: "main".into(),
+            head: "12345678".into(),
+            dirty: true,
+            is_current: true,
+            is_main: true,
+            available: true,
+            prunable_reason: None,
+            locked_reason: None,
+        });
+        app.repository.worktree_state.select(Some(0));
+        app.changes.install_files(vec![ChangedFile::empty(
+            PathBuf::from("changed.txt"),
+            FileStatus::Modified,
+        )]);
+        app.changes
+            .select_file_path(Some(PathBuf::from("changed.txt")));
+
+        app.view.focus = Focus::Diff;
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(app.view.discard_confirmation.is_none());
+
+        app.view.focus = Focus::Files;
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            app.view
+                .discard_confirmation
+                .as_ref()
+                .map(|confirmation| (confirmation.path.clone(), confirmation.status,)),
+            Some((PathBuf::from("changed.txt"), FileStatus::Modified))
+        );
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.view.discard_confirmation.is_none());
+    }
+
+    #[test]
     fn tab_changes_comparison_mode_while_history_is_active() {
         let mut app = test_app();
         app.history.history_panel = HistoryPanel::History;
@@ -3031,6 +3133,7 @@ mod tests {
                 focus: Focus::Worktrees,
                 show_help: false,
                 delete_confirmation: None,
+                discard_confirmation: None,
                 status: None,
                 worktree_filter: String::new(),
                 file_filter: String::new(),

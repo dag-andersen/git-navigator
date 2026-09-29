@@ -122,6 +122,7 @@ mod tests {
                 focus: Focus::Files,
                 show_help: false,
                 delete_confirmation: None,
+                discard_confirmation: None,
                 status: None,
                 worktree_filter: "agent".into(),
                 file_filter: "main".into(),

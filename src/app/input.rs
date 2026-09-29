@@ -29,6 +29,18 @@ impl App {
             return false;
         }
 
+        if self.view.discard_confirmation.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.confirm_file_discard(),
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.view.discard_confirmation = None;
+                    self.set_info("File discard cancelled");
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         if self.view.show_help {
             match key.code {
                 KeyCode::Char('q') => return true,
@@ -57,6 +69,7 @@ impl App {
             KeyCode::Char('d') if self.view.focus == Focus::Worktrees => {
                 self.request_worktree_removal()
             }
+            KeyCode::Char('d') if self.view.focus == Focus::Files => self.request_file_discard(),
             KeyCode::Enter if self.view.focus == Focus::Worktrees && !self.history_active() => {
                 self.toggle_history()
             }

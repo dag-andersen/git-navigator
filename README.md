@@ -1,6 +1,6 @@
 # git-navigator
 
-`git-navigator` is a fast, read-only terminal interface for exploring Git worktrees, changed files, commit history, and diffs without repeatedly changing directories or running separate Git commands.
+`git-navigator` is a fast terminal interface for exploring Git worktrees, changed files, commit history, and diffs without repeatedly changing directories or running separate Git commands. It can also discard changes from the selected file after confirmation.
 
 It is written in Rust with [Ratatui](https://ratatui.rs/).
 
@@ -28,6 +28,7 @@ It is written in Rust with [Ratatui](https://ratatui.rs/).
 - Expand any panel while retaining compact navigation rails
 - Cycle through multiple panel arrangements
 - Safely clean up eligible worktrees after confirmation
+- Discard all changes in the selected file after confirmation with `d` from the Files panel
 
 ## Installation
 
@@ -407,10 +408,11 @@ Refresh attempts to preserve:
 | `o` | Open the selected worktree in the default editor |
 | `r` | Refresh Git state |
 | `d` | Clean up the selected eligible worktree after confirmation |
+| `d` in Files | Discard the selected file's staged and unstaged changes after confirmation |
 | `Esc` | Return to Worktrees from History, cancel search, clear an applied list filter, or close a dialog |
 | `?` | Open keyboard help |
 | `q` | Quit |
 
 ## Safety
 
-Git inspection is read-only. Worktree cleanup is the only operation that changes repository or filesystem state, and it always requires explicit confirmation inside the application.
+Git inspection is read-only by default. Worktree cleanup and discarding changes from a selected file are the operations that change repository or filesystem state, and both always require explicit confirmation inside the application.

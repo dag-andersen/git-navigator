@@ -108,6 +108,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if let Some(confirmation) = &app.view.delete_confirmation {
         render_delete_confirmation(frame, confirmation);
     }
+    if let Some(confirmation) = &app.view.discard_confirmation {
+        render_discard_confirmation(frame, confirmation);
+    }
     if app.view.repository_picker.is_some() {
         render_repository_picker(frame, app);
     }
@@ -655,6 +658,12 @@ fn navigation_line(
             Span::raw(" clean worktree  "),
         ]);
     }
+    if focus == Focus::Files {
+        spans.extend([
+            Span::styled("d", Style::new().fg(Color::Cyan)),
+            Span::raw(" discard file  "),
+        ]);
+    }
     spans.extend([
         Span::styled("?", Style::new().fg(Color::Cyan)),
         Span::raw(" help  "),
@@ -704,13 +713,17 @@ fn render_help(frame: &mut Frame) {
         help_line("o", "Open the selected worktree in the default editor"),
         help_line("d", "Clean up the selected worktree"),
         help_line(
+            "d (Files)",
+            "Discard all uncommitted changes in the selected file",
+        ),
+        help_line(
             "? / Esc",
             "Close this help or return to Worktrees from History",
         ),
         help_line("q", "Quit"),
         Line::from(""),
         Line::styled(
-            "git-navigator is read-only and never modifies repository state.",
+            "Git changes require explicit confirmation before they are discarded.",
             Style::new().fg(Color::DarkGray),
         ),
     ]);
@@ -770,6 +783,43 @@ fn render_delete_confirmation(frame: &mut Frame, confirmation: &crate::app::Dele
                     .border_type(BorderType::Rounded)
                     .border_style(Style::new().fg(Color::LightRed))
                     .title(" Confirm cleanup "),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_discard_confirmation(frame: &mut Frame, confirmation: &crate::app::DiscardConfirmation) {
+    let area = centered_rect(66, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let text = Text::from(vec![
+        Line::styled(
+            "Discard file changes?",
+            Style::new().fg(Color::LightRed).bold(),
+        ),
+        Line::from(""),
+        Line::from(format!("Path: {}", confirmation.path.display())),
+        Line::from(""),
+        Line::styled(
+            "This removes all staged and unstaged changes in this file.",
+            Style::new().fg(Color::Yellow),
+        ),
+        Line::from("Untracked files will be deleted permanently."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("y", Style::new().fg(Color::LightRed).bold()),
+            Span::raw(" confirm   "),
+            Span::styled("n / Esc", Style::new().fg(Color::Cyan).bold()),
+            Span::raw(" cancel"),
+        ]),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(Color::LightRed))
+                    .title(" Confirm discard "),
             )
             .wrap(Wrap { trim: false }),
         area,
@@ -1200,6 +1250,7 @@ mod tests {
                 focus: Focus::Worktrees,
                 show_help: false,
                 delete_confirmation: None,
+                discard_confirmation: None,
                 status: None,
                 worktree_filter: String::new(),
                 file_filter: String::new(),
@@ -1378,6 +1429,7 @@ mod tests {
                 focus: Focus::Worktrees,
                 show_help: false,
                 delete_confirmation: None,
+                discard_confirmation: None,
                 status: None,
                 worktree_filter: String::new(),
                 file_filter: String::new(),

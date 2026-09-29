@@ -7,7 +7,7 @@ mod process;
 #[path = "worktrees.rs"]
 mod worktrees;
 
-pub use changes::{load_changes, load_commit_changes};
+pub use changes::{discard_file, load_changes, load_commit_changes};
 pub use history::{
     base_tip_hashes, branch_tips, commit_history, head_hash, history_comparison_base,
     history_range_commits_from_base, is_ancestor,

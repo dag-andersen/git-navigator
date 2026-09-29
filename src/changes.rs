@@ -134,6 +134,31 @@ pub fn load_changes(
     Ok(files)
 }
 
+pub fn discard_file(
+    worktree: &Path,
+    path: &Path,
+    old_path: Option<&Path>,
+    status: FileStatus,
+) -> Result<()> {
+    if status.is_untracked() {
+        let output = super::process::git_command(worktree)
+            .args(["clean", "-f", "--"])
+            .arg(path)
+            .output()?;
+        super::process::ensure_git_success(output, worktree, "git clean")?;
+        return Ok(());
+    }
+
+    let mut command = super::process::git_command(worktree);
+    command.args(["restore", "--source=HEAD", "--staged", "--worktree", "--"]);
+    if let Some(old_path) = old_path {
+        command.arg(old_path);
+    }
+    let output = command.arg(path).output()?;
+    super::process::ensure_git_success(output, worktree, "git restore")?;
+    Ok(())
+}
+
 fn load_full_file_changes(
     worktree: &Path,
     mode: ChangeMode,
@@ -703,6 +728,46 @@ index 1111111..0000000
         assert!(files.iter().any(|file| {
             file.path == Path::new("new.txt") && file.status == FileStatus::Untracked
         }));
+    }
+
+    #[test]
+    fn discards_tracked_and_untracked_files() {
+        let repository = TestRepository::new();
+        fs::write(repository.path().join("tracked.txt"), "changed\n")
+            .expect("tracked file should be changed");
+        fs::write(repository.path().join("untracked.txt"), "new\n")
+            .expect("untracked file should be written");
+
+        discard_file(
+            repository.path(),
+            Path::new("tracked.txt"),
+            None,
+            FileStatus::Modified,
+        )
+        .expect("tracked changes should be discarded");
+        discard_file(
+            repository.path(),
+            Path::new("untracked.txt"),
+            None,
+            FileStatus::Untracked,
+        )
+        .expect("untracked file should be discarded");
+
+        assert_eq!(
+            fs::read_to_string(repository.path().join("tracked.txt"))
+                .expect("tracked file should remain"),
+            "original\n"
+        );
+        assert!(!repository.path().join("untracked.txt").exists());
+        assert!(
+            git(
+                repository.path(),
+                &["status", "--porcelain=v1", "--untracked-files=normal"]
+            )
+            .expect("status should load")
+            .stdout
+            .is_empty()
+        );
     }
 
     #[test]
