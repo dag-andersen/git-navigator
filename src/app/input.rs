@@ -45,6 +45,9 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => return true,
+            KeyCode::Esc if self.view.focus == Focus::Worktrees && self.history_active() => {
+                self.toggle_history()
+            }
             KeyCode::Esc if self.view.focus != Focus::Diff => self.clear_filter(self.view.focus),
             KeyCode::Char('?') => self.view.show_help = true,
             KeyCode::Char('r') => self.refresh(),
@@ -53,9 +56,6 @@ impl App {
             KeyCode::Char('o') => self.open_selected_worktree(),
             KeyCode::Char('d') if self.view.focus == Focus::Worktrees => {
                 self.request_worktree_removal()
-            }
-            KeyCode::Char('h') if matches!(self.view.focus, Focus::Worktrees | Focus::Files) => {
-                self.toggle_history()
             }
             KeyCode::Enter if self.view.focus == Focus::Worktrees && !self.history_active() => {
                 self.toggle_history()
@@ -70,7 +70,7 @@ impl App {
                 self.view.expanded = false;
             }
             KeyCode::Char('/') => self.begin_search(),
-            KeyCode::Left | KeyCode::Char('h') => self.focus_left(),
+            KeyCode::Left => self.focus_left(),
             KeyCode::Right => self.focus_right(),
             KeyCode::Up | KeyCode::Char('k') => self.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),

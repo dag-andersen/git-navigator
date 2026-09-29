@@ -569,7 +569,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else if let Some(status) = &app.view.status {
         status_line(status.kind, &status.text)
     } else {
-        navigation_line(app.view.focus, app.view.expanded, app.view.follow_changes)
+        navigation_line(
+            app.view.focus,
+            app.view.expanded,
+            app.view.follow_changes,
+            app.history_active(),
+        )
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -597,7 +602,12 @@ fn search_line(focus: Focus, query: &str) -> Line<'static> {
     ])
 }
 
-fn navigation_line(focus: Focus, expanded: bool, follow_changes: bool) -> Line<'static> {
+fn navigation_line(
+    focus: Focus,
+    expanded: bool,
+    follow_changes: bool,
+    history_active: bool,
+) -> Line<'static> {
     let mut spans = vec![
         Span::styled("←/→", Style::new().fg(Color::Cyan)),
         Span::raw(" panes  "),
@@ -633,17 +643,16 @@ fn navigation_line(focus: Focus, expanded: bool, follow_changes: bool) -> Line<'
         ]);
     }
     if focus == Focus::Worktrees {
+        let (key, target_panel) = if history_active {
+            ("Esc", "Worktrees")
+        } else {
+            ("Enter", "History")
+        };
         spans.extend([
-            Span::styled("h", Style::new().fg(Color::Cyan)),
-            Span::raw(" history  "),
+            Span::styled(key, Style::new().fg(Color::Cyan)),
+            Span::raw(format!(" {target_panel}  ")),
             Span::styled("d", Style::new().fg(Color::Cyan)),
             Span::raw(" clean worktree  "),
-        ]);
-    }
-    if focus == Focus::Files {
-        spans.extend([
-            Span::styled("h", Style::new().fg(Color::Cyan)),
-            Span::raw(" history  "),
         ]);
     }
     spans.extend([
@@ -674,13 +683,13 @@ fn render_help(frame: &mut Frame) {
     let help = Text::from(vec![
         Line::styled("Keyboard", Style::new().bold().fg(Color::Cyan)),
         Line::from(""),
-        help_line("Left / h", "Focus the pane to the left"),
+        help_line("Left", "Focus the pane to the left"),
         help_line("Right / l", "Focus the pane to the right"),
         help_line("Up / k", "Move up or scroll the diff"),
         help_line("Down / j", "Move down or scroll the diff"),
         help_line("Page Up/Down", "Scroll the diff by ten rows"),
         help_line("Home / End", "Jump to the start or end of the diff"),
-        help_line("Enter", "Collapse or expand the current hunk"),
+        help_line("Enter", "Open History or collapse the current hunk"),
         help_line("Tab", "Switch change mode"),
         help_line("Space", "Expand or restore the focused panel"),
         help_line("t", "Cycle panel layout"),
@@ -694,7 +703,10 @@ fn render_help(frame: &mut Frame) {
         help_line("f", "Toggle following the latest changed file and diff"),
         help_line("o", "Open the selected worktree in the default editor"),
         help_line("d", "Clean up the selected worktree"),
-        help_line("? / Esc", "Close this help"),
+        help_line(
+            "? / Esc",
+            "Close this help or return to Worktrees from History",
+        ),
         help_line("q", "Quit"),
         Line::from(""),
         Line::styled(
@@ -904,11 +916,16 @@ mod tests {
 
     #[test]
     fn cleanup_shortcut_is_only_shown_for_worktree_focus() {
-        let worktree_footer = line_text(&navigation_line(Focus::Worktrees, false, false));
-        let files_footer = line_text(&navigation_line(Focus::Files, false, false));
-        let diff_footer = line_text(&navigation_line(Focus::Diff, false, false));
+        let worktree_footer = line_text(&navigation_line(Focus::Worktrees, false, false, false));
+        let history_footer = line_text(&navigation_line(Focus::Worktrees, false, false, true));
+        let files_footer = line_text(&navigation_line(Focus::Files, false, false, false));
+        let diff_footer = line_text(&navigation_line(Focus::Diff, false, false, false));
 
         assert!(worktree_footer.contains("d clean worktree"));
+        assert!(worktree_footer.contains("Enter History"));
+        assert!(!worktree_footer.contains("Esc Worktrees"));
+        assert!(history_footer.contains("Esc Worktrees"));
+        assert!(!history_footer.contains("Enter History"));
         assert!(!files_footer.contains("d clean worktree"));
         assert!(!diff_footer.contains("d clean worktree"));
         assert!(!worktree_footer.contains("v view"));
@@ -930,12 +947,12 @@ mod tests {
     #[test]
     fn expansion_shortcut_describes_the_next_action() {
         assert!(
-            navigation_line(Focus::Diff, false, false)
+            navigation_line(Focus::Diff, false, false, false)
                 .to_string()
                 .contains("Space expand")
         );
         assert!(
-            navigation_line(Focus::Diff, true, false)
+            navigation_line(Focus::Diff, true, false, false)
                 .to_string()
                 .contains("Space minimize")
         );

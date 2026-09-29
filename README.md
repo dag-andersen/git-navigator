@@ -226,7 +226,7 @@ For an existing clean linked worktree, cleanup removes its directory and Git met
 
 ## Commit History
 
-Press `h` while Worktrees or Files is focused to replace the Worktrees panel with Commit History. Press `h` again to return to Worktrees when linked worktrees exist. Repositories without linked worktrees open directly in History mode, so their first column is already the commit history rather than a collapsed or hidden Worktrees panel. History remains active in that case.
+Press `Enter` while Worktrees is focused to replace the Worktrees panel with Commit History. Press `Esc` while History is focused to return to Worktrees when linked worktrees exist. Repositories without linked worktrees open directly in History mode, so their first column is already the commit history rather than a collapsed or hidden Worktrees panel. History remains active in that case.
 
 History contains up to 100 commits and starts with a virtual WIP entry:
 
@@ -393,14 +393,13 @@ Refresh attempts to preserve:
 | `Up`, `Down` | Navigate the focused panel |
 | `j`, `k` | Move down or up outside search input |
 | `Right` | Move focus right |
-| `h` | Toggle History from Worktrees or Files, or move left from Diff |
+| `Enter` | Open History from Worktrees, fold a Diff hunk, apply a list search, or move to the next Diff search match |
 | `Page Up`, `Page Down` | Move through the Diff by ten rows |
 | `Home`, `End` | Jump to the beginning or end of the Diff |
 | `Tab` | Switch comparison mode |
 | `Space` | Expand or restore the focused panel |
 | `t` | Cycle panel layout |
 | `/` | Search the focused panel |
-| `Enter` | Fold a Diff hunk, apply a list search, or move to the next Diff search match |
 | `v` | Toggle Hunks and Full File views |
 | `s` | Toggle Split and Unified Diff layouts |
 | `w` | Toggle Diff line wrapping |
@@ -408,7 +407,7 @@ Refresh attempts to preserve:
 | `o` | Open the selected worktree in the default editor |
 | `r` | Refresh Git state |
 | `d` | Clean up the selected eligible worktree after confirmation |
-| `Esc` | Cancel search, clear an applied list filter, or close a dialog |
+| `Esc` | Return to Worktrees from History, cancel search, clear an applied list filter, or close a dialog |
 | `?` | Open keyboard help |
 | `q` | Quit |
 

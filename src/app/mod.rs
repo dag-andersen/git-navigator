@@ -2651,7 +2651,7 @@ mod tests {
     }
 
     #[test]
-    fn h_toggles_history_from_worktrees_and_files() {
+    fn enter_and_escape_toggle_history_from_the_first_panel() {
         let mut app = test_app();
         app.repository.worktrees.push(Worktree {
             path: PathBuf::from("/repo/agent"),
@@ -2691,15 +2691,29 @@ mod tests {
             .expect("git commit should run");
         app.repository.worktree_state.select(Some(0));
         app.repository.worktrees[0].path = repository.path().to_path_buf();
-        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Enter));
         assert!(app.history_active());
         assert_eq!(app.view.focus, Focus::Worktrees);
 
-        app.handle_key(key(KeyCode::Char('h')));
-        assert!(!app.history_active());
-        app.view.focus = Focus::Files;
-        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Enter));
         assert!(app.history_active());
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.history_active());
+
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.history_active());
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.history_active());
+    }
+
+    #[test]
+    fn h_no_longer_changes_focus_or_history() {
+        let mut app = test_app();
+        app.handle_key(key(KeyCode::Char('h')));
+
+        assert!(!app.history_active());
+        assert_eq!(app.view.focus, Focus::Worktrees);
     }
 
     #[test]
